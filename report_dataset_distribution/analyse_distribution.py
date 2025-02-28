@@ -132,6 +132,50 @@ def visualize_distribution(result_df, concept, total_samples):
     return sorted_df
 
 
+def calculate_balance_recommendations(result_df, total_samples):
+    """
+    Calculate recommendations for how many samples to add to achieve a balanced dataset.
+
+    Args:
+        result_df: DataFrame with distribution statistics
+        total_samples: Total number of samples in the dataset
+
+    Returns:
+        DataFrame with recommendations for each category
+    """
+    # Filter out 'missing' and 'unspecified' categories for balancing purposes
+    categories_df = result_df[~result_df["category"].isin(["missing", "unspecified"])]
+
+    if len(categories_df) == 0:
+        return pd.DataFrame()  # No categories to balance
+
+    # Find the category with the highest count
+    max_count = categories_df["count"].max()
+
+    # Calculate how many samples to add for each category
+    recommendations = []
+    for _, row in categories_df.iterrows():
+        category = row["category"]
+        current_count = row["count"]
+        to_add = max_count - current_count
+
+        recommendations.append(
+            {
+                "category": category,
+                "current_count": current_count,
+                "target_count": max_count,
+                "samples_to_add": to_add,
+                "percentage_increase": (
+                    (to_add / current_count * 100)
+                    if current_count > 0
+                    else float("inf")
+                ),
+            }
+        )
+
+    return pd.DataFrame(recommendations)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze concept distribution in captions"
@@ -171,6 +215,28 @@ def main():
     print("-" * 50)
 
     sorted_df = visualize_distribution(result_df, args.concept, total_samples)
+
+    # Calculate balance recommendations
+    recommendations_df = calculate_balance_recommendations(sorted_df, total_samples)
+
+    # Print recommendations
+    if not recommendations_df.empty:
+        print(
+            "\nBased on the analysis, we recommend you to add the following number of extra samples for each category to achieve a balanced dataset:"
+        )
+        print("-" * 100)
+        for _, row in recommendations_df.iterrows():
+            if row["samples_to_add"] > 0:
+                print(
+                    f"  {row['category']}: {int(row['samples_to_add'])} samples (from {int(row['current_count'])} to {int(row['target_count'])} samples, {row['percentage_increase']:.1f}% increase)"
+                )
+
+        # Save recommendations to CSV
+        recommendations_file = (
+            output_dir / f"{args.concept}_balance_recommendations.csv"
+        )
+        recommendations_df.to_csv(recommendations_file, index=False)
+        print(f"\nDetailed recommendations saved to {recommendations_file}")
 
     # Save results to CSV
     output_file = output_dir / f"{args.concept}_distribution.csv"
