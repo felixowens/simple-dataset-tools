@@ -18,8 +18,10 @@ import logging
 from enum import Enum, auto
 
 import numpy as np
-from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+from PIL import Image, ImageEnhance, ImageOps, ImageFilter, ImageDraw
 import tqdm
+
+from dataloader import CaptionDataLoader
 
 
 class AugmentationType(Enum):
@@ -33,31 +35,50 @@ class AugmentationType(Enum):
     COLOR = auto()
     CROP = auto()
     NOISE = auto()
+    PATCH_DELETION = auto()
 
 
 @dataclass
 class AugmentationConfig:
     """Configuration for augmentation parameters."""
 
+    # Default values are moderate to avoid drastic changes
     enabled_types: List[AugmentationType]
-    rotation_range: Tuple[float, float] = (-30.0, 30.0)
-    brightness_range: Tuple[float, float] = (0.7, 1.3)
-    contrast_range: Tuple[float, float] = (0.7, 1.3)
+    rotation_range: Tuple[float, float] = (-10.0, 10.0)
+    brightness_range: Tuple[float, float] = (0.9, 1.1)
+    contrast_range: Tuple[float, float] = (0.9, 1.1)
     blur_radius_range: Tuple[float, float] = (0.5, 1.5)
     color_factor_range: Tuple[float, float] = (0.7, 1.3)
     crop_percent_range: Tuple[float, float] = (0.8, 0.95)
     noise_factor_range: Tuple[float, float] = (5, 20)
-    augmentations_per_image: int = 3
+    # TODO: Make more sophisticated, e.g. if caption contains "long shot", reduce patch size by 50%
+    patch_size_range: Tuple[float, float] = (0.01, 0.05)
+    num_patches_range: Tuple[int, int] = (1, 3)
+    patch_fill_color: Tuple[int, int, int] = (0, 0, 0)
+    augmentations_per_image: int = 2
     caption_augmentation: bool = False
+    seed: Optional[int] = 16
 
 
 @dataclass
 class DatasetItem:
-    """Represents a single item in the dataset."""
+    """
+    A class to store a dataset item with an image path, caption, and metadata.
+    """
 
-    image_path: Path
-    caption: str
-    metadata: Optional[Dict[str, Any]] = None
+    def __init__(
+        self,
+        key: str,
+        filename: str,
+        image_path: Path,
+        caption: str,
+        metadata: dict | None = None,
+    ):
+        self.key = key
+        self.filename = filename
+        self.image_path = image_path
+        self.caption = caption
+        self.metadata = metadata
 
 
 class DatasetAugmenter:
@@ -70,6 +91,7 @@ class DatasetAugmenter:
         maintain_folder_structure: bool = True,
         save_metadata: bool = True,
         num_workers: int = 4,
+        copy_originals: bool = True,
     ):
         """
         Initialize the dataset augmenter.
@@ -80,12 +102,20 @@ class DatasetAugmenter:
             maintain_folder_structure: Whether to maintain folder structure in output
             save_metadata: Whether to save metadata about augmentations
             num_workers: Number of parallel workers for processing
+            copy_originals: Whether to copy original files to output directory
         """
         self.config = config
         self.output_dir = output_dir
         self.maintain_folder_structure = maintain_folder_structure
         self.save_metadata = save_metadata
         self.num_workers = num_workers
+        self.copy_originals = copy_originals
+
+        # Set random seed if provided
+        if self.config.seed is not None:
+            random.seed(self.config.seed)
+            np.random.seed(self.config.seed)
+            self.logger.info(f"Random seed set to {self.config.seed}")
 
         # Configure logging
         logging.basicConfig(
@@ -104,7 +134,7 @@ class DatasetAugmenter:
 
     def load_dataset(
         self, dataset_path: Union[Path, List[DatasetItem]]
-    ) -> List[DatasetItem]:
+    ) -> list[DatasetItem]:
         """
         Load dataset from directory or list of items.
 
@@ -122,71 +152,14 @@ class DatasetAugmenter:
         if not dataset_path.exists():
             raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
 
-        # Check if the path is a JSON file containing dataset information
-        if dataset_path.is_file() and dataset_path.suffix.lower() == ".json":
-            return self._load_dataset_from_json(dataset_path)
+        test_path = "/home/felix/datasets/SCL-caption-tiny/images"
 
-        # Otherwise, assume it's a directory structure with images and captions
-        return self._load_dataset_from_directory(dataset_path)
+        # Load from dataloader
+        data_loader = CaptionDataLoader(Path(test_path), dataset_path)
+        data_loader.load_from_json_custom(dataset_path)
+        return data_loader.items  # type: ignore
 
-    def _load_dataset_from_json(self, json_path: Path) -> List[DatasetItem]:
-        """Load dataset from a JSON file."""
-        self.logger.info(f"Loading dataset from JSON: {json_path}")
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        items = []
-        for item in data:
-            # Handle different JSON formats
-            if isinstance(item, dict):
-                if "image_path" in item and "caption" in item:
-                    image_path = Path(item["image_path"])
-                    caption = item["caption"]
-                    metadata = item.get("metadata")
-                    items.append(DatasetItem(image_path, caption, metadata))
-                else:
-                    self.logger.warning(
-                        f"Skipping item with missing required fields: {item}"
-                    )
-            else:
-                self.logger.warning(f"Skipping non-dictionary item: {item}")
-
-        self.logger.info(f"Loaded {len(items)} items from JSON")
-        return items
-
-    def _load_dataset_from_directory(self, dir_path: Path) -> List[DatasetItem]:
-        """
-        Load dataset from a directory structure.
-
-        Assumes images and corresponding caption files with the same name but different extension.
-        """
-        self.logger.info(f"Loading dataset from directory: {dir_path}")
-        items = []
-
-        # Get all image files
-        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-        image_paths = []
-
-        for ext in image_extensions:
-            image_paths.extend(dir_path.glob(f"**/*{ext}"))
-
-        for img_path in image_paths:
-            # Look for caption file with the same name but different extension
-            caption_path = img_path.with_suffix(".txt")
-            if caption_path.exists():
-                try:
-                    with open(caption_path, "r", encoding="utf-8") as f:
-                        caption = f.read().strip()
-                    items.append(DatasetItem(img_path, caption))
-                except Exception as e:
-                    self.logger.warning(f"Error reading caption for {img_path}: {e}")
-            else:
-                self.logger.warning(f"No caption file found for {img_path}")
-
-        self.logger.info(f"Loaded {len(items)} items from directory")
-        return items
-
-    def augment_dataset(self, dataset: List[DatasetItem]) -> List[DatasetItem]:
+    def augment_dataset(self, dataset: list[DatasetItem]) -> list[DatasetItem]:
         """
         Augment the dataset with the configured transformations.
 
@@ -199,8 +172,24 @@ class DatasetAugmenter:
         self.logger.info(f"Starting augmentation of {len(dataset)} items...")
         self.stats["total_original"] = len(dataset)
 
-        augmented_dataset = dataset.copy()  # Start with the original items
+        augmented_dataset = []
 
+        # Copy original items if configured to do so
+        if self.copy_originals:
+            self.logger.info("Copying original items to output directory...")
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                list(
+                    tqdm.tqdm(
+                        executor.map(self._copy_original_item, dataset),
+                        total=len(dataset),
+                        desc="Copying original items",
+                    )
+                )
+            augmented_dataset.extend(dataset)
+        else:
+            augmented_dataset = dataset.copy()
+
+        self.logger.info("Generating augmented items...")
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             # Process each original item
             future_to_item = {
@@ -231,7 +220,35 @@ class DatasetAugmenter:
 
         return augmented_dataset
 
-    def _augment_item(self, item: DatasetItem) -> List[DatasetItem]:
+    def _copy_original_item(self, item: DatasetItem) -> None:
+        """Copy an original dataset item to the output directory."""
+        try:
+            # Store the original image path
+            original_image_path = item.image_path
+
+            # Determine output path based on configuration
+            if self.maintain_folder_structure:
+                rel_path = original_image_path.relative_to(original_image_path.anchor)
+                out_img_path = self.output_dir / rel_path
+                out_img_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                out_img_path = self.output_dir / original_image_path.name
+
+            # Copy the image file
+            Image.open(original_image_path).save(out_img_path)
+
+            # Save caption to file
+            caption_path = out_img_path.with_suffix(".txt")
+            with open(caption_path, "w", encoding="utf-8") as f:
+                f.write(item.caption)
+
+            # Update the item's image path to point to the new location
+            item.image_path = out_img_path
+
+        except Exception as e:
+            self.logger.error(f"Error copying original item {item.image_path}: {e}")
+
+    def _augment_item(self, item: DatasetItem) -> list[DatasetItem]:
         """Augment a single dataset item with multiple transformations."""
         new_items = []
 
@@ -240,10 +257,10 @@ class DatasetAugmenter:
             image = Image.open(item.image_path)
 
             # Generate n augmented versions
-            for i in range(self.config.augmentations_per_image):
+            for i in range(self.config.augmentations_per_image - 1):
                 # Choose random augmentation types based on configuration
                 available_types = self.config.enabled_types.copy()
-                num_augs = min(len(available_types), random.randint(1, 3))
+                num_augs = len(available_types)
                 aug_types = random.sample(available_types, num_augs)
 
                 # Apply the selected augmentations
@@ -257,10 +274,6 @@ class DatasetAugmenter:
 
                 # Generate augmented caption if enabled
                 aug_caption = item.caption
-                if self.config.caption_augmentation:
-                    aug_caption = self._augment_caption(
-                        item.caption, aug_meta["augmentations"]
-                    )
 
                 # Create a unique filename for the augmented image
                 aug_name = f"{item.image_path.stem}_aug_{i}_{random.randint(1000, 9999)}{item.image_path.suffix}"
@@ -275,6 +288,8 @@ class DatasetAugmenter:
 
                 # Create the new dataset item
                 new_item = DatasetItem(
+                    key=f"{item.key}_aug_{i}_{random.randint(1000, 9999)}",
+                    filename=aug_name,
                     image_path=out_img_path,
                     caption=aug_caption,
                     metadata=aug_meta if self.save_metadata else None,
@@ -288,12 +303,6 @@ class DatasetAugmenter:
                 with open(caption_path, "w", encoding="utf-8") as f:
                     f.write(aug_caption)
 
-                # Save metadata if enabled
-                if self.save_metadata:
-                    meta_path = out_img_path.with_suffix(".meta.json")
-                    with open(meta_path, "w", encoding="utf-8") as f:
-                        json.dump(aug_meta, f, indent=2)
-
                 new_items.append(new_item)
 
         except Exception as e:
@@ -305,7 +314,7 @@ class DatasetAugmenter:
         self, image: Image.Image, aug_type: AugmentationType
     ) -> Tuple[Image.Image, Dict[str, Any]]:
         """Apply a specific augmentation to an image and return the result with metadata."""
-        aug_info = {"type": aug_type.name}
+        aug_info: dict[str, Any] = {"type": aug_type.name}
 
         if aug_type == AugmentationType.FLIP:
             # Horizontal flip
@@ -315,7 +324,7 @@ class DatasetAugmenter:
         elif aug_type == AugmentationType.ROTATE:
             # Random rotation
             angle = random.uniform(*self.config.rotation_range)
-            image = image.rotate(angle, resample=Image.BICUBIC, expand=False)
+            image = image.rotate(angle, resample=Image.Resampling.BICUBIC, expand=False)
             aug_info["angle"] = angle
 
         elif aug_type == AugmentationType.BRIGHTNESS:
@@ -357,7 +366,7 @@ class DatasetAugmenter:
             bottom = top + new_height
 
             image = image.crop((left, top, right, bottom))
-            image = image.resize(original_size, Image.LANCZOS)
+            image = image.resize(original_size, Image.Resampling.LANCZOS)
 
             aug_info.update(
                 {"crop_percent": crop_percent, "crop_box": (left, top, right, bottom)}
@@ -368,6 +377,45 @@ class DatasetAugmenter:
             factor = random.uniform(*self.config.noise_factor_range)
             image = self._add_noise(image, factor)
             aug_info["factor"] = factor
+
+        elif aug_type == AugmentationType.PATCH_DELETION:
+            # Delete random patches from the image
+            num_patches = random.randint(*self.config.num_patches_range)
+            patches_info = []
+
+            # Create a copy of the image to draw on
+            img_draw = image.copy()
+            img_width, img_height = img_draw.size
+
+            for _ in range(num_patches):
+                # Determine patch size as fraction of image dimensions
+                patch_size_factor = random.uniform(*self.config.patch_size_range)
+                patch_width = int(img_width * patch_size_factor)
+                patch_height = int(img_height * patch_size_factor)
+
+                # Random position for the patch
+                left = random.randint(0, img_width - patch_width)
+                top = random.randint(0, img_height - patch_height)
+                right = left + patch_width
+                bottom = top + patch_height
+
+                # Create a patch with the fill color
+                draw = ImageDraw.Draw(img_draw)
+                draw.rectangle(
+                    [left, top, right, bottom], fill=self.config.patch_fill_color
+                )
+
+                # Record patch information
+                patches_info.append(
+                    {
+                        "position": (left, top, right, bottom),
+                        "size_factor": patch_size_factor,
+                    }
+                )
+
+            image = img_draw
+            aug_info["patches"] = patches_info
+            aug_info["num_patches"] = num_patches
 
         return image, aug_info
 
@@ -386,54 +434,9 @@ class DatasetAugmenter:
 
         return Image.fromarray(noisy_img)
 
-    # TODO: need to update this to be more sophisticated, e.g. using a language model
-    def _augment_caption(
-        self, caption: str, augmentations: List[Dict[str, Any]]
-    ) -> str:
-        """
-        Augment caption based on applied image transformations.
-
-        This is a simple implementation that adds information about transformations.
-        A more sophisticated approach would use a language model to rewrite captions.
-        """
-        aug_desc = []
-
-        for aug in augmentations:
-            aug_type = aug["type"]
-
-            if aug_type == AugmentationType.FLIP:
-                aug_desc.append("horizontally flipped")
-            elif aug_type == AugmentationType.ROTATE:
-                ang = aug["angle"]
-                direction = "clockwise" if ang > 0 else "counter-clockwise"
-                aug_desc.append(f"rotated {abs(ang):.1f}° {direction}")
-            elif aug_type == AugmentationType.BRIGHTNESS:
-                factor = aug["factor"]
-                adj = "brightened" if factor > 1 else "darkened"
-                aug_desc.append(adj)
-            elif aug_type == AugmentationType.CONTRAST:
-                factor = aug["factor"]
-                adj = "increased contrast" if factor > 1 else "decreased contrast"
-                aug_desc.append(adj)
-            elif aug_type == AugmentationType.BLUR:
-                aug_desc.append("slightly blurred")
-            elif aug_type == AugmentationType.COLOR:
-                factor = aug["factor"]
-                adj = "increased saturation" if factor > 1 else "decreased saturation"
-                aug_desc.append(adj)
-            elif aug_type == AugmentationType.CROP:
-                aug_desc.append("cropped and resized")
-            elif aug_type == AugmentationType.NOISE:
-                aug_desc.append("with added noise")
-
-        if aug_desc:
-            aug_text = ", ".join(aug_desc)
-            return f"{caption} [Image is {aug_text}]"
-
-        return caption
-
-    def save_dataset_metadata(self, dataset: List[DatasetItem]):
+    def save_dataset_metadata(self, dataset: list[DatasetItem]):
         """Save overall dataset metadata to the output directory."""
+        # Save standard metadata
         metadata = {
             "original_count": self.stats["total_original"],
             "augmented_count": self.stats["total_augmented"],
@@ -446,6 +449,7 @@ class DatasetAugmenter:
                 "enabled_types": [aug.name for aug in self.config.enabled_types],
                 "augmentations_per_image": self.config.augmentations_per_image,
                 "caption_augmentation": self.config.caption_augmentation,
+                "seed": self.config.seed,
                 "parameters": {
                     "rotation_range": self.config.rotation_range,
                     "brightness_range": self.config.brightness_range,
@@ -454,6 +458,9 @@ class DatasetAugmenter:
                     "color_factor_range": self.config.color_factor_range,
                     "crop_percent_range": self.config.crop_percent_range,
                     "noise_factor_range": self.config.noise_factor_range,
+                    "patch_size_range": self.config.patch_size_range,
+                    "num_patches_range": self.config.num_patches_range,
+                    "patch_fill_color": self.config.patch_fill_color,
                 },
             },
         }
@@ -462,7 +469,24 @@ class DatasetAugmenter:
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
+        # Save dataset in the requested JSON format
+        dataset_json = {}
+        for item in dataset:
+            dataset_json[item.key] = {
+                "filename": item.filename,
+                "file_attributes": {"caption": item.caption},
+            }
+
+            # Add metadata if available
+            if item.metadata:
+                dataset_json[item.key]["file_attributes"]["metadata"] = item.metadata
+
+        dataset_path = self.output_dir / "dataset.json"
+        with open(dataset_path, "w", encoding="utf-8") as f:
+            json.dump(dataset_json, f, indent=2)
+
         self.logger.info(f"Dataset metadata saved to {meta_path}")
+        self.logger.info(f"Dataset JSON saved to {dataset_path}")
 
 
 def parse_arguments():
@@ -495,7 +519,7 @@ def parse_arguments():
         "-t",
         type=str,
         nargs="+",
-        default=["FLIP", "ROTATE", "BRIGHTNESS", "CONTRAST", "BLUR", "COLOR"],
+        default=["ROTATE", "BRIGHTNESS", "CONTRAST", "PATCH_DELETION"],
         help="Types of augmentations to apply",
     )
     parser.add_argument(
@@ -516,6 +540,29 @@ def parse_arguments():
     parser.add_argument(
         "--seed", "-s", type=int, default=None, help="Random seed for reproducibility"
     )
+    parser.add_argument(
+        "--skip-originals",
+        action="store_true",
+        help="Skip copying original files to output directory",
+    )
+    parser.add_argument(
+        "--patch-size",
+        type=str,
+        default="0.1,0.3",
+        help="Range of patch sizes as fraction of image (min,max)",
+    )
+    parser.add_argument(
+        "--num-patches",
+        type=str,
+        default="1,3",
+        help="Range of number of patches to delete (min,max)",
+    )
+    parser.add_argument(
+        "--patch-color",
+        type=str,
+        default="0,0,0",
+        help="RGB color to fill deleted patches (r,g,b)",
+    )
 
     return parser.parse_args()
 
@@ -523,11 +570,6 @@ def parse_arguments():
 def main():
     """Main function to run the script."""
     args = parse_arguments()
-
-    # Set random seed if provided
-    if args.seed is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
 
     # Convert string augmentation types to enum values
     aug_types = []
@@ -537,11 +579,20 @@ def main():
         except KeyError:
             print(f"Warning: Unknown augmentation type '{aug_type}', skipping")
 
+    # Parse patch deletion parameters
+    patch_size_range: Tuple[float, float] = tuple(map(float, args.patch_size.split(",")))  # type: ignore
+    num_patches_range: Tuple[int, int] = tuple(map(int, args.num_patches.split(",")))  # type: ignore
+    patch_fill_color: Tuple[int, int, int] = tuple(map(int, args.patch_color.split(",")))  # type: ignore
+
     # Create augmentation configuration
     config = AugmentationConfig(
         enabled_types=aug_types,
         augmentations_per_image=args.augmentations,
         caption_augmentation=args.caption_augmentation,
+        patch_size_range=patch_size_range,
+        num_patches_range=num_patches_range,
+        patch_fill_color=patch_fill_color,
+        seed=args.seed,
     )
 
     # Create augmenter
@@ -550,6 +601,7 @@ def main():
         output_dir=Path(args.output),
         maintain_folder_structure=args.maintain_structure,
         num_workers=args.workers,
+        copy_originals=not args.skip_originals,
     )
 
     # Load dataset
@@ -572,5 +624,5 @@ if __name__ == "__main__":
     main()
 
     # Example usage:
-    # python caption_dataset_augmentation.py -i dataset -o augmented_dataset -a 3 -t FLIP ROTATE BRIGHTNESS CONTRAST BLUR COLOR -m -c -w 4
-    # python caption_dataset_augmentation.py -i dataset.json -o augmented_dataset -a 3 -t FLIP ROTATE BRIGHTNESS CONTRAST BLUR COLOR -m -c -w 4
+    # python augment_captions.py -i dataset -o augmented_dataset -a 3 -t FLIP ROTATE BRIGHTNESS CONTRAST BLUR COLOR PATCH_DELETION -m -c -w 4
+    # python augment_captions.py -i dataset.json -o augmented_dataset -a 3 -t FLIP ROTATE BRIGHTNESS CONTRAST BLUR COLOR PATCH_DELETION -m -c -w 4
