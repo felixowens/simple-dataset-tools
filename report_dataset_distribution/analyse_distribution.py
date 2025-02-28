@@ -203,6 +203,3 @@ if __name__ == "__main__":
 
     # Example usage:
     # python analyse_distribution.py /path/to/captions.json "hair" "long" "medium" "short"
-
-    # TODO: handle caption overlap between categories, should first look for the longest match
-    # TODO: report which filenames have missing or unspecified categories
