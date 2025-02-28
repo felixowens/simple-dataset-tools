@@ -12,20 +12,29 @@ class CaptionDataLoader:
         Initializes the CaptionDataLoader.
         """
         self.captions: list[str] = []  # List to store loaded captions
+        self.dict: dict[str, str] = {}  # Dict to store filename and caption
 
-    def load_from_list(self, caption_list):
+    def load_from_list(self, caption_list, filenames=None):
         """
         Loads captions from a Python list of strings.
 
         Args:
             caption_list (list of str): A list where each element is a caption string.
+            filenames (list of str, optional): A list of filenames corresponding to the captions.
         """
         if not isinstance(caption_list, list):
             raise TypeError("Input must be a list of strings.")
         for caption in caption_list:
             if not isinstance(caption, str):
                 raise ValueError("List must contain only string captions.")
+
         self.captions.extend(caption_list)
+
+        if filenames:
+            if len(filenames) != len(caption_list):
+                raise ValueError("Number of filenames must match number of captions")
+            for filename, caption in zip(filenames, caption_list):
+                self.dict[filename] = caption
 
     def load_from_txt(self, txt_filepath):
         """
@@ -38,12 +47,12 @@ class CaptionDataLoader:
             raise FileNotFoundError(f"Text file not found: {txt_filepath}")
         try:
             with open(txt_filepath, "r", encoding="utf-8") as f:
-                for line in f:
-                    caption = (
-                        line.strip()
-                    )  # Remove leading/trailing whitespace, including newlines
+                for i, line in enumerate(f):
+                    caption = line.strip()
                     if caption:  # Ignore empty lines
                         self.captions.append(caption)
+                        # Use line number as filename since original filename is unknown
+                        self.dict[f"line_{i}"] = caption
         except Exception as e:
             raise RuntimeError(f"Error reading text file: {txt_filepath}. {e}")
 
@@ -61,10 +70,12 @@ class CaptionDataLoader:
                 data = json.load(f)
                 if not isinstance(data, list):
                     raise ValueError("JSON file should contain a list at the root.")
-                for caption in data:
+                for i, caption in enumerate(data):
                     if not isinstance(caption, str):
                         raise ValueError("JSON list must contain only string captions.")
                     self.captions.append(caption)
+                    # Use index as filename since original filename is unknown
+                    self.dict[f"item_{i}"] = caption
         except json.JSONDecodeError as e:
             raise ValueError(
                 f"Error decoding JSON file: {json_filepath}. Invalid JSON format. {e}"
@@ -96,17 +107,16 @@ class CaptionDataLoader:
                     ):
                         print(
                             f"Warning: Skipping entry with key '{key}' due to unexpected format."
-                        )  # or raise an error if strict format is needed
-                        continue  # Skip entries that don't match the expected structure
+                        )
+                        continue
                     caption = value["file_attributes"]["caption"]
-                    if isinstance(
-                        caption, str
-                    ):  # Ensure caption is a string before adding
+                    if isinstance(caption, str):
                         self.captions.append(caption)
+                        self.dict[key] = caption
                     else:
                         print(
                             f"Warning: Caption for key '{key}' is not a string. Skipping entry."
-                        )  # Handle non-string captions as needed
+                        )
         except json.JSONDecodeError as e:
             raise ValueError(
                 f"Error decoding JSON file: {json_filepath}. Invalid JSON format. {e}"
@@ -123,8 +133,18 @@ class CaptionDataLoader:
         """
         return self.captions
 
+    def get_caption_dict(self):
+        """
+        Returns the dictionary of filename-caption pairs.
+
+        Returns:
+            dict: A dictionary mapping filenames to captions.
+        """
+        return self.dict
+
     def clear_captions(self):
         """
-        Clears any currently loaded captions, resetting to an empty list.
+        Clears any currently loaded captions, resetting to an empty list and dict.
         """
         self.captions = []
+        self.dict = {}

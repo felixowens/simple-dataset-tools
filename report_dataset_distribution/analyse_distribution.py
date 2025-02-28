@@ -11,7 +11,10 @@ from dataloader import CaptionDataLoader
 
 
 def analyze_concept_distribution(
-    captions: list[str], concept: str, categories: list[str]
+    captions: list[str],
+    concept: str,
+    categories: list[str],
+    filenames: list[str] | None = None,
 ):
     """
     Analyze the distribution of a concept across different categories in captions.
@@ -20,9 +23,10 @@ def analyze_concept_distribution(
         captions: List of captions to analyze
         concept: The concept to analyze (e.g., "hair")
         categories: List of categories to look for (e.g., ["long", "medium", "short"])
+        filenames: Optional list of filenames corresponding to captions
 
     Returns:
-        DataFrame with distribution statistics
+        DataFrame with distribution statistics and lists of filenames with missing/unspecified categories
     """
 
     # Initialize counters
@@ -34,19 +38,26 @@ def analyze_concept_distribution(
         results[category] = 0
     results["unspecified"] = 0
 
+    # Sort categories by length (descending) to prioritize longer matches
+    sorted_categories = sorted(categories, key=len, reverse=True)
+
     # Pattern to match concept paired with each category
     patterns = {
         category: re.compile(
             rf"\b{category}\s+{concept}\b|\b{concept}\s+{category}\b", re.IGNORECASE
         )
-        for category in categories
+        for category in sorted_categories
     }
 
     # Check for concept without any category
     concept_pattern = re.compile(rf"\b{concept}\b", re.IGNORECASE)
 
+    # Track filenames with missing or unspecified categories
+    missing_files = []
+    unspecified_files = []
+
     # Count occurrences
-    for caption in captions:
+    for i, caption in enumerate(captions):
         category_found = False
 
         for category, pattern in patterns.items():
@@ -58,6 +69,12 @@ def analyze_concept_distribution(
         # If concept is mentioned but without any specified category
         if not category_found and concept_pattern.search(caption):
             results["unspecified"] += 1
+            if filenames:
+                unspecified_files.append(filenames[i])
+        # If concept is not mentioned at all
+        elif not category_found:
+            if filenames:
+                missing_files.append(filenames[i])
 
     # Count captions without the concept at all
     results["missing"] = total_samples - sum(results.values())
@@ -71,7 +88,7 @@ def analyze_concept_distribution(
         }
     )
 
-    return result_df, total_samples
+    return result_df, total_samples, missing_files, unspecified_files
 
 
 def visualize_distribution(result_df, concept, total_samples):
@@ -126,14 +143,25 @@ def main():
         nargs="+",
         help='Categories to analyze (e.g., "long medium short")',
     )
+    parser.add_argument(
+        "--output-dir", default="testing", help="Directory to save output files"
+    )
 
     args = parser.parse_args()
+
+    # Create output directory if it doesn't exist
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
 
     data_loader = CaptionDataLoader()
     data_loader.load_from_json_custom(args.captions_file)
 
-    result_df, total_samples = analyze_concept_distribution(
-        data_loader.captions, args.concept, args.categories
+    filenames = list(data_loader.dict.keys()) if hasattr(data_loader, "dict") else None
+
+    result_df, total_samples, missing_files, unspecified_files = (
+        analyze_concept_distribution(
+            data_loader.captions, args.concept, args.categories, filenames
+        )
     )
 
     # Print text summary
@@ -145,10 +173,28 @@ def main():
     sorted_df = visualize_distribution(result_df, args.concept, total_samples)
 
     # Save results to CSV
-    output_file = f"testing/{args.concept}_distribution.csv"
+    output_file = output_dir / f"{args.concept}_distribution.csv"
     sorted_df.to_csv(output_file, index=False)
+
+    # Save missing and unspecified filenames to text files
+    if missing_files:
+        missing_file = output_dir / f"{args.concept}_missing_files.txt"
+        with open(missing_file, "w") as f:
+            f.write("\n".join(missing_files))
+        print(f"Found {len(missing_files)} files without the concept '{args.concept}'")
+        print(f"List saved to {missing_file}")
+
+    if unspecified_files:
+        unspecified_file = output_dir / f"{args.concept}_unspecified_files.txt"
+        with open(unspecified_file, "w") as f:
+            f.write("\n".join(unspecified_files))
+        print(
+            f"Found {len(unspecified_files)} files with unspecified '{args.concept}' category"
+        )
+        print(f"List saved to {unspecified_file}")
+
     print(
-        f"\nResults saved to {output_file} and testing/{args.concept}_distribution.png"
+        f"\nResults saved to {output_file} and {output_dir}/{args.concept}_distribution.png"
     )
 
 
@@ -158,6 +204,5 @@ if __name__ == "__main__":
     # Example usage:
     # python analyse_distribution.py /path/to/captions.json "hair" "long" "medium" "short"
 
-    # TODO: handle caption overlap between categories, should first lok for the longest match
-    # TODO: add var to return dict of filename and caption to dataloader
+    # TODO: handle caption overlap between categories, should first look for the longest match
     # TODO: report which filenames have missing or unspecified categories
