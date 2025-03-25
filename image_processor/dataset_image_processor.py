@@ -274,7 +274,12 @@ def parse_arguments():
 
 
 def main():
-    """Main function to run the script."""
+    """
+    Main function to run the script.
+
+    Example usage:
+    python dataset_image_processor.py --input ./my_dataset --output ./processed_dataset --resize --megapixels 1.5 --workers 8
+    """
     args = parse_arguments()
 
     processor = DatasetImageProcessor(
