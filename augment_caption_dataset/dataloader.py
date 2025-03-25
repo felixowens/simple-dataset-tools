@@ -39,6 +39,7 @@ class CaptionDataLoader:
     def load_from_json_custom(self, json_filepath):
         """
         Loads captions from the custom JSON format.
+        Expects the JSON format from VIA JSON export.
 
         Args:
             json_filepath (str): Path to the JSON file in the custom format.

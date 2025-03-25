@@ -8,8 +8,8 @@ from transformers import AutoModelForCausalLM
 from PIL import Image
 
 
-class Moondream2FT(CaptioningModel):
-    path = "/home/felix/tools/moondream2/models/saved/moondream_base_finetuned_v1_a2_100.safetensors"
+class Moondream(CaptioningModel):
+    path = "/home/felix/tools/moondream2/models/saved/moondream_base_finetuned_v1_a2_150_best.safetensors"
     prompt = "\n\nQuestion: Describe this image.\n\nAnswer:"
 
     def __init__(self):

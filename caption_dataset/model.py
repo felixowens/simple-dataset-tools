@@ -184,8 +184,8 @@ def parse_arguments():
         type=str,
         required=True,
         help="Model name",
-        choices=["moondream2_ft"],
-        default="moondream2_ft",
+        choices=["moondream"],
+        default="moondream",
     )
     return parser.parse_args()
 
@@ -195,7 +195,13 @@ def load_model(model_name: str) -> CaptioningModel:
     if not model_path.exists():
         raise FileNotFoundError(f"Model {model_name} not found in models directory")
     module = importlib.import_module(f"models.{model_name}")
-    return getattr(module, model_name)
+
+    # Get the correct class name (first letter capitalized)
+    class_name = model_name.capitalize()
+    if not hasattr(module, class_name):
+        raise AttributeError(f"Module {model_name} has no attribute {class_name}")
+
+    return getattr(module, class_name)()  # Instantiate the model class
 
 
 if __name__ == "__main__":
