@@ -23,6 +23,7 @@ import logging
 
 from data_manager import AnnotationDataManager
 from dataset_manager import DatasetManager
+from similarity_service import similarity_service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "image-edit-annotator-secret-key"
 app.config["UPLOAD_FOLDER"] = Path(__file__).parent / "static" / "uploads"
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
+app.config["MAX_CONTENT_LENGTH"] = 1000 * 1024 * 1024  # 100MB max file size
 
 # Allowed image extensions
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
@@ -356,6 +357,12 @@ def upload_files():
                 {"filename": unique_filename, "original_name": filename, "url": url}
             )
 
+            # Add image to similarity index
+            try:
+                similarity_service.add_image(unique_filename, filepath)
+            except Exception as e:
+                logger.warning(f"Failed to add image to similarity index: {e}")
+
     logger.info(
         f"Uploaded {len(uploaded_files)} files to dataset '{dataset_name or 'default'}'"
     )
@@ -558,6 +565,84 @@ def get_filtered_images():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/images/similar/<filename>")
+def get_similar_images(filename):
+    """Get images similar to the specified image."""
+    try:
+        # Get dataset context
+        dataset_name = get_dataset_from_request()
+        upload_dir = app.config["UPLOAD_FOLDER"]
+
+        logger.info(f"Looking for similar images to {filename} in {upload_dir}")
+
+        # Check if target image exists in upload directory
+        target_path = upload_dir / filename
+        if not target_path.exists():
+            logger.error(f"Target image not found: {target_path}")
+            return jsonify({"error": "Target image not found"}), 404
+
+        # Rebuild similarity index for current upload directory to ensure all images are indexed
+        try:
+            indexed_count = similarity_service.rebuild_index(upload_dir)
+            logger.info(f"Rebuilt similarity index with {indexed_count} images")
+        except Exception as e:
+            logger.warning(f"Failed to rebuild similarity index: {e}")
+
+        # Get similarity parameters from query string
+        max_results = int(request.args.get("max_results", 15))
+        max_similarity = float(request.args.get("max_similarity", 0.5))
+
+        # Ensure the target image is in the similarity index
+        if not similarity_service.add_image(filename, target_path):
+            logger.error(f"Could not process target image: {filename}")
+            return jsonify({"error": "Could not process target image"}), 500
+
+        # Find similar images
+        similar_images = similarity_service.find_similar_images(
+            filename, max_results=max_results, max_similarity_score=max_similarity
+        )
+
+        logger.info(f"Similarity service found {len(similar_images)} similar images")
+
+        # Get all available images to build full image objects
+        images_response = get_images()
+        if images_response.status_code != 200:
+            logger.error("Could not retrieve image list")
+            return jsonify({"error": "Could not retrieve image list"}), 500
+
+        all_images = images_response.get_json()["images"]
+        image_lookup = {img["filename"]: img for img in all_images}
+
+        # Build response with full image objects and similarity scores
+        similar_image_objects = []
+        for similar_filename, similarity_score in similar_images:
+            if similar_filename in image_lookup:
+                image_obj = image_lookup[similar_filename].copy()
+                image_obj["similarity_score"] = round(similarity_score, 3)
+                similar_image_objects.append(image_obj)
+
+        logger.info(f"Found {len(similar_image_objects)} similar images for {filename}")
+
+        return jsonify(
+            {
+                "target_image": filename,
+                "similar_images": similar_image_objects,
+                "total_found": len(similar_image_objects),
+                "parameters": {
+                    "max_results": max_results,
+                    "max_similarity": max_similarity,
+                },
+            }
+        )
+
+    except ValueError as e:
+        logger.error(f"Invalid parameter: {e}")
+        return jsonify({"error": f"Invalid parameter: {e}"}), 400
+    except Exception as e:
+        logger.error(f"Error finding similar images for {filename}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/annotations", methods=["GET"])
 def get_annotations():
     """Get all annotations."""
@@ -690,6 +775,12 @@ def delete_image(filename):
         # Remove the file
         file_path.unlink()
 
+        # Remove from similarity index
+        try:
+            similarity_service.remove_image(filename)
+        except Exception as e:
+            logger.warning(f"Failed to remove image from similarity index: {e}")
+
         # Also remove any annotations that reference this image
         annotations_to_remove = []
         for ann_id, annotation in data_manager.annotations.items():
@@ -738,6 +829,14 @@ def clear_images():
                         file_path.unlink()
                         removed_files += 1
 
+                        # Remove from similarity index
+                        try:
+                            similarity_service.remove_image(file_path.name)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove {file_path.name} from similarity index: {e}"
+                            )
+
             # Clear all annotations
             removed_annotations = len(data_manager.annotations)
             data_manager.annotations.clear()
@@ -750,6 +849,14 @@ def clear_images():
                 if file_path.exists():
                     file_path.unlink()
                     removed_files += 1
+
+                    # Remove from similarity index
+                    try:
+                        similarity_service.remove_image(filename)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to remove {filename} from similarity index: {e}"
+                        )
 
             # Remove related annotations
             annotations_to_remove = []
@@ -785,6 +892,14 @@ def clear_images():
 if __name__ == "__main__":
     # Ensure upload directory exists
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
+
+    # Initialize similarity service with existing images
+    try:
+        upload_dir = app.config["UPLOAD_FOLDER"]
+        count = similarity_service.rebuild_index(upload_dir)
+        logger.info(f"Initialized similarity service with {count} existing images")
+    except Exception as e:
+        logger.error(f"Failed to initialize similarity service: {e}")
 
     # Run the Flask app
     app.run(debug=True, host="0.0.0.0", port=5000)

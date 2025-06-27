@@ -666,6 +666,99 @@ body {
     background: #27ae60;
 }
 
+/* Similarity Indicators */
+.similarity-indicator {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: bold;
+    color: white;
+    line-height: 1;
+    z-index: 2;
+    background: #9b59b6;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+/* Similar Image Styling */
+.similar-image {
+    position: relative;
+}
+
+.similar-image::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border: 2px solid;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.highly-similar::before {
+    border-color: #e74c3c;
+    box-shadow: 0 0 12px rgba(231, 76, 60, 0.4);
+    animation: pulse-high 2s infinite;
+}
+
+.moderately-similar::before {
+    border-color: #f39c12;
+    box-shadow: 0 0 8px rgba(243, 156, 18, 0.3);
+    animation: pulse-medium 2s infinite;
+}
+
+.somewhat-similar::before {
+    border-color: #3498db;
+    box-shadow: 0 0 6px rgba(52, 152, 219, 0.2);
+    animation: pulse-low 2s infinite;
+}
+
+/* Pulse animations for different similarity levels */
+@keyframes pulse-high {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+@keyframes pulse-medium {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.8; }
+}
+
+@keyframes pulse-low {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.9; }
+}
+
+/* Override default hover effects for similar images */
+.similar-image:hover {
+    transform: scale(1.08);
+}
+
+.highly-similar:hover {
+    transform: scale(1.1);
+}
+
+/* Enhanced styling for different similarity ranks */
+.highly-similar .similarity-indicator {
+    background: #e74c3c;
+    font-size: 0.75rem;
+    font-weight: 900;
+}
+
+.moderately-similar .similarity-indicator {
+    background: #f39c12;
+    font-weight: 800;
+}
+
+.somewhat-similar .similarity-indicator {
+    background: #3498db;
+}
+
 /* Update form actions layout for three buttons */
 .form-actions {
     display: flex;

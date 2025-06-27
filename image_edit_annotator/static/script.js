@@ -15,6 +15,8 @@ class ImageEditAnnotator {
         this.isAutoSaving = false;
         this.currentFilter = 'all';
         this.filterCounts = {};
+        this.similarImages = [];
+        this.showingSimilar = false;
 
         this.initializeEventListeners();
         this.loadExistingData();
@@ -281,7 +283,37 @@ class ImageEditAnnotator {
         const grid = document.getElementById('image-grid');
         grid.innerHTML = '';
 
-        this.images.forEach((image, index) => {
+        // Create similarity lookup for quick access
+        const similarityMap = {};
+        if (this.showingSimilar && this.similarImages.length > 0) {
+            this.similarImages.forEach((similarImg, index) => {
+                similarityMap[similarImg.filename] = {
+                    score: similarImg.similarity_score,
+                    rank: index + 1
+                };
+            });
+        }
+
+        // Sort images to show similar ones at the top
+        let imagesToRender = [...this.images];
+        if (this.showingSimilar && this.similarImages.length > 0) {
+            imagesToRender.sort((a, b) => {
+                const aInSimilar = a.filename in similarityMap;
+                const bInSimilar = b.filename in similarityMap;
+                
+                // If both are similar, sort by similarity rank
+                if (aInSimilar && bInSimilar) {
+                    return similarityMap[a.filename].rank - similarityMap[b.filename].rank;
+                }
+                // Similar images come first
+                if (aInSimilar && !bInSimilar) return -1;
+                if (!aInSimilar && bInSimilar) return 1;
+                // Non-similar images maintain original order
+                return 0;
+            });
+        }
+
+        imagesToRender.forEach((image, index) => {
             const imageItem = document.createElement('div');
             imageItem.className = 'image-item';
             imageItem.dataset.filename = image.filename;
@@ -320,6 +352,26 @@ class ImageEditAnnotator {
                 }
             }
 
+            // Add similarity indicator
+            if (image.filename in similarityMap) {
+                const similarityInfo = similarityMap[image.filename];
+                const similarityIndicator = document.createElement('div');
+                similarityIndicator.className = 'similarity-indicator';
+                similarityIndicator.textContent = `#${similarityInfo.rank}`;
+                similarityIndicator.title = `Similarity rank ${similarityInfo.rank} (score: ${similarityInfo.score})`;
+                imageItem.appendChild(similarityIndicator);
+                imageItem.classList.add('similar-image');
+
+                // Add different styling based on similarity rank
+                if (similarityInfo.rank <= 3) {
+                    imageItem.classList.add('highly-similar');
+                } else if (similarityInfo.rank <= 8) {
+                    imageItem.classList.add('moderately-similar');
+                } else {
+                    imageItem.classList.add('somewhat-similar');
+                }
+            }
+
             imageItem.appendChild(checkbox);
             imageItem.appendChild(img);
             imageItem.addEventListener('click', () => this.selectImage(image, imageItem));
@@ -342,7 +394,9 @@ class ImageEditAnnotator {
             this.selectedBeforeImage = image;
             element.classList.add('before-selected');
             this.displayImage(image, 'before');
-            this.showMessage('Selected before image. Now select the after image.', 'info');
+            this.showMessage('Selected before image. Finding similar images...', 'info');
+            // Show similar images
+            this.showSimilarImages(image);
         } else if (!this.selectedAfterImage && image.filename !== this.selectedBeforeImage.filename) {
             // Select as after image
             this.selectedAfterImage = image;
@@ -358,6 +412,8 @@ class ImageEditAnnotator {
             this.clearImageDisplay('before');
             this.disableForm();
             this.showMessage('Before image deselected', 'info');
+            // Hide similar images
+            this.hideSimilarImages();
         } else {
             // Replace selection
             this.clearImageSelections();
@@ -367,7 +423,9 @@ class ImageEditAnnotator {
             this.displayImage(image, 'before');
             this.clearImageDisplay('after');
             this.disableForm();
-            this.showMessage('Selected before image. Now select the after image.', 'info');
+            this.showMessage('Selected before image. Finding similar images...', 'info');
+            // Show similar images for new selection
+            this.showSimilarImages(image);
         }
 
         this.updateSaveButtonState();
@@ -518,6 +576,9 @@ class ImageEditAnnotator {
 
         this.disableForm();
         this.updateSaveButtonState();
+
+        // Hide similar images
+        this.hideSimilarImages();
 
         this.showMessage('Form cleared', 'info');
     }
@@ -1107,6 +1168,69 @@ class ImageEditAnnotator {
         }
 
         filterCountElement.textContent = `(${countText})`;
+    }
+
+    async fetchSimilarImages(filename) {
+        try {
+            console.log(`Fetching similar images for: ${filename}`);
+            
+            // Build URL with proper dataset context
+            let url = `/api/images/similar/${encodeURIComponent(filename)}`;
+            const headers = {};
+            
+            // Add dataset context if available
+            if (this.datasetName) {
+                headers['X-Dataset-Name'] = this.datasetName;
+                // Also add as query parameter for compatibility
+                url += `?dataset=${encodeURIComponent(this.datasetName)}`;
+            }
+            
+            console.log(`Similarity API URL: ${url}`);
+            console.log(`Headers:`, headers);
+            
+            const response = await fetch(url, { headers });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log(`Found ${data.total_found} similar images for ${filename}`);
+                return data.similar_images || [];
+            } else {
+                console.error('Failed to fetch similar images:', response.status, await response.text());
+                return [];
+            }
+        } catch (error) {
+            console.error('Error fetching similar images:', error);
+            return [];
+        }
+    }
+
+    async showSimilarImages(targetImage) {
+        try {
+            // Show loading state
+            this.showMessage('Finding similar images...', 'info');
+
+            // Fetch similar images
+            this.similarImages = await this.fetchSimilarImages(targetImage.filename);
+            this.showingSimilar = true;
+
+            // Re-render the image grid with similarity highlighting
+            this.renderImageGrid();
+
+            if (this.similarImages.length > 0) {
+                this.showMessage(`Found ${this.similarImages.length} similar images`, 'success');
+            } else {
+                this.showMessage('No similar images found', 'info');
+            }
+        } catch (error) {
+            console.error('Error showing similar images:', error);
+            this.showMessage('Error finding similar images', 'error');
+        }
+    }
+
+    hideSimilarImages() {
+        this.similarImages = [];
+        this.showingSimilar = false;
+        this.renderImageGrid();
     }
 }
 
