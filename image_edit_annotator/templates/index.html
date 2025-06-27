@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Edit Prompt Annotator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Image Edit Prompt Annotator</h1>
+            {% if dataset_name %}
+            <div class="dataset-info">
+                <span class="dataset-badge">Dataset: {{ dataset_name }}</span>
+                <a href="/datasets" class="btn btn-small btn-secondary">Switch Dataset</a>
+            </div>
+            {% endif %}
+            <div class="header-controls">
+                <div class="stats">
+                    <span id="annotation-count">0 annotations</span>
+                    <span id="image-count">0 images</span>
+                </div>
+                <div class="export-controls">
+                    <button id="export-json" class="btn btn-secondary">Export JSON</button>
+                    <button id="export-csv" class="btn btn-secondary">Export CSV</button>
+                    <button id="export-jsonl" class="btn btn-secondary">Export JSONL</button>
+                    {% if dataset_name %}
+                    <button id="export-dataset" class="btn btn-primary">Export Full Dataset</button>
+                    {% endif %}
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Sidebar - Image Gallery -->
+            <aside class="sidebar">
+                <div class="upload-section">
+                    <h3>Upload Images</h3>
+                    <p class="upload-hint">📁 Drag & drop multiple images here or click to browse</p>
+                    <input type="file" id="file-input" multiple accept="image/*" style="display: none;">
+                    <button id="upload-btn" class="btn btn-primary">Choose Images</button>
+                    <div id="upload-progress" class="progress-bar" style="display: none;">
+                        <div class="progress-fill"></div>
+                    </div>
+                    <small class="upload-note">Supports: JPG, PNG, GIF, BMP, WebP</small>
+                </div>
+                
+                <div class="image-gallery">
+                    <div class="gallery-header">
+                        <h3>Available Images</h3>
+                        <div class="gallery-filters">
+                            <label for="image-filter">Filter:</label>
+                            <select id="image-filter" class="filter-select">
+                                <option value="all">All Images</option>
+                                <option value="unused">Unused Images</option>
+                                <option value="before-only">Before Images Only</option>
+                                <option value="after-only">After Images Only</option>
+                                <option value="used">Used Images</option>
+                            </select>
+                            <span id="filter-count" class="filter-count"></span>
+                        </div>
+                        <div class="gallery-controls">
+                            <button id="select-all-btn" class="btn btn-small">Select All</button>
+                            <button id="clear-selected-btn" class="btn btn-small btn-warning" disabled>Clear Selected</button>
+                            <button id="clear-all-btn" class="btn btn-small btn-danger">Clear All</button>
+                        </div>
+                    </div>
+                    <div id="image-grid" class="image-grid">
+                        <!-- Images will be populated here -->
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center Panel - Image Pair Display -->
+            <main class="image-display">
+                <div class="image-pair-container">
+                    <div class="image-before">
+                        <h4>Before Image</h4>
+                        <div id="before-image-container" class="image-container">
+                            <div class="placeholder">Select an image from the gallery</div>
+                        </div>
+                    </div>
+                    
+                    <div class="arrow">→</div>
+                    
+                    <div class="image-after">
+                        <h4>After Image</h4>
+                        <div id="after-image-container" class="image-container">
+                            <div class="placeholder">Select a second image from the gallery</div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Panel - Annotation Form -->
+            <aside class="annotation-panel">
+                <h3>Edit Description</h3>
+                <form id="annotation-form">
+                    <div class="form-group">
+                        <label for="edit-description">Describe the edit/transformation:</label>
+                        <textarea id="edit-description" name="edit-description" rows="6" 
+                                  placeholder="Describe what changes were made between the before and after images..."></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="edit-tags">Tags (comma-separated):</label>
+                        <input type="text" id="edit-tags" name="edit-tags" 
+                               placeholder="e.g., color-correction, object-removal, style-transfer">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="difficulty">Difficulty Level:</label>
+                        <select id="difficulty" name="difficulty">
+                            <option value="">Select difficulty</option>
+                            <option value="easy">Easy</option>
+                            <option value="medium">Medium</option>
+                            <option value="hard">Hard</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit" id="save-annotation" class="btn btn-primary" disabled>
+                            Save Annotation
+                        </button>
+                        <button type="button" id="clear-form" class="btn btn-secondary">
+                            Clear Form
+                        </button>
+                        <button type="button" id="delete-annotation" class="btn btn-danger" disabled>
+                            Delete Current
+                        </button>
+                    </div>
+                </form>
+            </aside>
+        </div>
+
+        <!-- Bottom Panel - Navigation & Status -->
+        <footer class="footer">
+            <div class="navigation-controls">
+                <button id="prev-annotation" class="btn btn-secondary" disabled>← Previous</button>
+                <span id="current-annotation">No annotations yet</span>
+                <button id="next-annotation" class="btn btn-secondary" disabled>Next →</button>
+            </div>
+            
+            <div class="status-area">
+                <div id="save-status" class="save-status">Ready</div>
+                <div id="message-area" class="message-area"></div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Annotation List Modal -->
+    <div id="annotation-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Existing Annotations</h3>
+                <button id="close-modal" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="annotation-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        // Pass dataset context to JavaScript
+        window.DATASET_CONFIG = {
+            datasetName: {% if dataset_name %}"{{ dataset_name }}"{% else %}null{% endif %}
+        };
+    </script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

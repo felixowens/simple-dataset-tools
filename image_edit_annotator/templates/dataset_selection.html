@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dataset Selection - Image Edit Annotator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .dataset-selection-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        
+        .action-section {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .action-section h2 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            align-items: end;
+        }
+        
+        .form-group {
+            flex: 1;
+        }
+        
+        .form-group.auto {
+            flex: 0 0 auto;
+        }
+        
+        .datasets-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .dataset-card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .dataset-card:hover {
+            border-color: #007bff;
+            box-shadow: 0 4px 15px rgba(0,123,255,0.2);
+        }
+        
+        .dataset-card.selected {
+            border-color: #007bff;
+            background: #f8f9ff;
+        }
+        
+        .dataset-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        
+        .dataset-description {
+            color: #666;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        
+        .dataset-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 15px;
+        }
+        
+        .dataset-meta {
+            font-size: 11px;
+            color: #aaa;
+        }
+        
+        .dataset-actions {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+        }
+        
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 11px;
+            margin-left: 4px;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+            border: none;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+            border: none;
+        }
+        
+        .import-section {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            transition: border-color 0.3s ease;
+        }
+        
+        .import-section.drag-over {
+            border-color: #007bff;
+            background: #f8f9ff;
+        }
+        
+        .no-datasets {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px;
+        }
+        
+        .continue-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            padding: 15px 30px;
+            font-size: 16px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(40,167,69,0.3);
+            display: none;
+        }
+        
+        .continue-btn:hover {
+            background: #218838;
+        }
+        
+        .message-area {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        
+        .message-area.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .message-area.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <div class="dataset-selection-container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Image Edit Prompt Annotator</h1>
+            <p>Select a dataset to work with or create a new one</p>
+        </header>
+
+        <!-- Create New Dataset Section -->
+        <div class="action-section">
+            <h2>🆕 Create New Dataset</h2>
+            <form id="create-dataset-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="dataset-name">Dataset Name *</label>
+                        <input type="text" id="dataset-name" name="name" required 
+                               pattern="[a-zA-Z0-9_-]+" 
+                               title="Only letters, numbers, underscores, and hyphens allowed"
+                               placeholder="e.g., portrait_edits_v1">
+                    </div>
+                    <div class="form-group">
+                        <label for="dataset-version">Version</label>
+                        <input type="text" id="dataset-version" name="version" value="1.0" placeholder="1.0">
+                    </div>
+                    <div class="form-group auto">
+                        <button type="submit" class="btn btn-primary">Create Dataset</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="dataset-description">Description (optional)</label>
+                    <textarea id="dataset-description" name="description" rows="2" 
+                              placeholder="Brief description of this dataset..."></textarea>
+                </div>
+                <div id="create-message" class="message-area"></div>
+            </form>
+        </div>
+
+        <!-- Import Dataset Section -->
+        <div class="action-section">
+            <h2>📥 Import Existing Dataset</h2>
+            <div class="import-section" id="import-section">
+                <p>📁 Drag & drop a dataset ZIP file here or click to browse</p>
+                <input type="file" id="import-file" accept=".zip" style="display: none;">
+                <button type="button" id="import-btn" class="btn btn-secondary">Choose ZIP File</button>
+                <label>
+                    <input type="checkbox" id="overwrite-checkbox"> Overwrite if dataset already exists
+                </label>
+                <div id="import-message" class="message-area"></div>
+            </div>
+        </div>
+
+        <!-- Existing Datasets Section -->
+        <div class="action-section">
+            <h2>📂 Select Existing Dataset</h2>
+            <div id="datasets-container">
+                <div class="no-datasets">Loading datasets...</div>
+            </div>
+        </div>
+
+        <!-- Continue Button -->
+        <button id="continue-btn" class="continue-btn">
+            Continue with Selected Dataset →
+        </button>
+    </div>
+
+    <script>
+        class DatasetSelector {
+            constructor() {
+                this.datasets = [];
+                this.selectedDataset = null;
+                this.initializeEventListeners();
+                this.loadDatasets();
+            }
+
+            initializeEventListeners() {
+                // Create dataset form
+                document.getElementById('create-dataset-form').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.createDataset();
+                });
+
+                // Import functionality
+                const importBtn = document.getElementById('import-btn');
+                const importFile = document.getElementById('import-file');
+                const importSection = document.getElementById('import-section');
+
+                importBtn.addEventListener('click', () => importFile.click());
+                importFile.addEventListener('change', (e) => this.handleImport(e));
+
+                // Drag and drop for import
+                importSection.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    importSection.classList.add('drag-over');
+                });
+
+                importSection.addEventListener('dragleave', (e) => {
+                    e.preventDefault();
+                    importSection.classList.remove('drag-over');
+                });
+
+                importSection.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    importSection.classList.remove('drag-over');
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0 && files[0].name.endsWith('.zip')) {
+                        importFile.files = files;
+                        this.handleImport({ target: { files: files } });
+                    } else {
+                        this.showMessage('import-message', 'Please drop a ZIP file', 'error');
+                    }
+                });
+
+                // Continue button
+                document.getElementById('continue-btn').addEventListener('click', () => {
+                    this.continueWithDataset();
+                });
+            }
+
+            async loadDatasets() {
+                try {
+                    const response = await fetch('/api/datasets');
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.datasets = data.datasets || [];
+                        this.renderDatasets();
+                    } else {
+                        throw new Error('Failed to load datasets');
+                    }
+                } catch (error) {
+                    console.error('Error loading datasets:', error);
+                    document.getElementById('datasets-container').innerHTML = 
+                        '<div class="no-datasets">Error loading datasets</div>';
+                }
+            }
+
+            renderDatasets() {
+                const container = document.getElementById('datasets-container');
+                
+                if (this.datasets.length === 0) {
+                    container.innerHTML = '<div class="no-datasets">No datasets found. Create a new one to get started!</div>';
+                    return;
+                }
+
+                const grid = document.createElement('div');
+                grid.className = 'datasets-grid';
+
+                this.datasets.forEach(dataset => {
+                    const card = this.createDatasetCard(dataset);
+                    grid.appendChild(card);
+                });
+
+                container.innerHTML = '';
+                container.appendChild(grid);
+            }
+
+            createDatasetCard(dataset) {
+                const card = document.createElement('div');
+                card.className = 'dataset-card';
+                card.dataset.name = dataset.name;
+
+                const createdDate = new Date(dataset.created_at).toLocaleDateString();
+                const updatedDate = new Date(dataset.updated_at).toLocaleDateString();
+
+                card.innerHTML = `
+                    <div class="dataset-actions">
+                        <button class="btn btn-small btn-secondary" onclick="event.stopPropagation(); datasetSelector.migrateImages('${dataset.name}')" title="Migrate Legacy Images">🔄</button>
+                        <button class="btn btn-small btn-secondary" onclick="event.stopPropagation(); datasetSelector.exportDataset('${dataset.name}')" title="Export Dataset">📤</button>
+                        <button class="btn btn-small btn-danger" onclick="event.stopPropagation(); datasetSelector.deleteDataset('${dataset.name}')" title="Delete Dataset">🗑️</button>
+                    </div>
+                    <div class="dataset-name">${dataset.name}</div>
+                    <div class="dataset-description">${dataset.description || 'No description'}</div>
+                    <div class="dataset-stats">
+                        <span>📝 ${dataset.annotation_count} annotations</span>
+                        <span>🖼️ ${dataset.image_count} images</span>
+                        <span>📋 v${dataset.version}</span>
+                    </div>
+                    <div class="dataset-meta">
+                        Created: ${createdDate} | Updated: ${updatedDate}
+                    </div>
+                `;
+
+                card.addEventListener('click', () => this.selectDataset(dataset));
+                return card;
+            }
+
+            selectDataset(dataset) {
+                // Remove previous selection
+                document.querySelectorAll('.dataset-card').forEach(card => {
+                    card.classList.remove('selected');
+                });
+
+                // Add selection to clicked card
+                const card = document.querySelector(`[data-name="${dataset.name}"]`);
+                card.classList.add('selected');
+
+                this.selectedDataset = dataset;
+                document.getElementById('continue-btn').style.display = 'block';
+            }
+
+            async createDataset() {
+                const form = document.getElementById('create-dataset-form');
+                const formData = new FormData(form);
+                
+                const data = {
+                    name: formData.get('name').trim(),
+                    description: formData.get('description').trim(),
+                    version: formData.get('version').trim() || '1.0'
+                };
+
+                try {
+                    const response = await fetch('/api/datasets', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        this.showMessage('create-message', `Dataset "${data.name}" created successfully!`, 'success');
+                        form.reset();
+                        this.loadDatasets(); // Refresh the list
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Failed to create dataset');
+                    }
+                } catch (error) {
+                    console.error('Error creating dataset:', error);
+                    this.showMessage('create-message', `Error: ${error.message}`, 'error');
+                }
+            }
+
+            async handleImport(event) {
+                const file = event.target.files[0];
+                if (!file || !file.name.endsWith('.zip')) {
+                    this.showMessage('import-message', 'Please select a ZIP file', 'error');
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('overwrite', document.getElementById('overwrite-checkbox').checked);
+
+                try {
+                    this.showMessage('import-message', 'Importing dataset...', 'info');
+                    
+                    const response = await fetch('/api/datasets/import', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        this.showMessage('import-message', `Dataset "${result.dataset_name}" imported successfully!`, 'success');
+                        this.loadDatasets(); // Refresh the list
+                        event.target.value = ''; // Clear file input
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Failed to import dataset');
+                    }
+                } catch (error) {
+                    console.error('Error importing dataset:', error);
+                    this.showMessage('import-message', `Error: ${error.message}`, 'error');
+                }
+            }
+
+            async exportDataset(datasetName) {
+                try {
+                    const response = await fetch(`/api/datasets/${datasetName}/export`);
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `dataset_${datasetName}.zip`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    } else {
+                        throw new Error('Export failed');
+                    }
+                } catch (error) {
+                    console.error('Error exporting dataset:', error);
+                    alert('Error exporting dataset: ' + error.message);
+                }
+            }
+
+            async migrateImages(datasetName) {
+                if (!confirm(`Migrate legacy images for dataset "${datasetName}"? This will copy referenced images from the old uploads folder to the dataset-specific folder.`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/datasets/${datasetName}/migrate-images`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        alert(`Migration completed!\nMigrated: ${result.migrated} images\nSkipped: ${result.skipped} images\nTotal referenced: ${result.total_referenced} images`);
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Migration failed');
+                    }
+                } catch (error) {
+                    console.error('Error migrating images:', error);
+                    alert('Error migrating images: ' + error.message);
+                }
+            }
+
+            async deleteDataset(datasetName) {
+                if (!confirm(`Are you sure you want to delete the dataset "${datasetName}"? This action cannot be undone.`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/datasets/${datasetName}`, {
+                        method: 'DELETE'
+                    });
+
+                    if (response.ok) {
+                        this.loadDatasets(); // Refresh the list
+                        if (this.selectedDataset && this.selectedDataset.name === datasetName) {
+                            this.selectedDataset = null;
+                            document.getElementById('continue-btn').style.display = 'none';
+                        }
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Failed to delete dataset');
+                    }
+                } catch (error) {
+                    console.error('Error deleting dataset:', error);
+                    alert('Error deleting dataset: ' + error.message);
+                }
+            }
+
+            continueWithDataset() {
+                if (this.selectedDataset) {
+                    // Store the selected dataset in localStorage
+                    localStorage.setItem('selectedDataset', this.selectedDataset.name);
+                    // Navigate to annotation interface
+                    window.location.href = '/?dataset=' + encodeURIComponent(this.selectedDataset.name);
+                }
+            }
+
+            showMessage(elementId, message, type) {
+                const element = document.getElementById(elementId);
+                element.textContent = message;
+                element.className = `message-area ${type}`;
+                element.style.display = 'block';
+
+                // Hide message after 5 seconds
+                setTimeout(() => {
+                    element.style.display = 'none';
+                }, 5000);
+            }
+        }
+
+        // Initialize the dataset selector
+        let datasetSelector;
+        document.addEventListener('DOMContentLoaded', () => {
+            datasetSelector = new DatasetSelector();
+        });
+    </script>
+</body>
+</html>

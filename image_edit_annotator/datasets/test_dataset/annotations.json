@@ -1,0 +1,13 @@
+{
+  "b5ccbe4d-115e-4ecf-abc9-62e7b408a230": {
+    "id": "b5ccbe4d-115e-4ecf-abc9-62e7b408a230",
+    "before_image": "test_before.jpg",
+    "after_image": "test_after.jpg",
+    "edit_description": "Test edit description",
+    "metadata": {
+      "test": "data"
+    },
+    "created_at": "2025-06-27T08:57:10.814032",
+    "updated_at": "2025-06-27T08:57:10.814038"
+  }
+}

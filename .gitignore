@@ -3,3 +3,4 @@ testing
 .env
 */tmp/
 models/
+statis/
