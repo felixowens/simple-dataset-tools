@@ -388,7 +388,7 @@ function ProjectPage() {
                   <div className="bg-gray-600 rounded-lg p-4">
                     <h4 className="text-white font-medium mb-2">AI-Toolkit Format</h4>
                     <p className="text-gray-300 text-sm mb-3">
-                      ZIP archive with source/target folders and caption text files for training.
+                      ZIP archive with source/target folders and caption text files in both directories.
                     </p>
                     <a
                       href={`http://localhost:8080/projects/${projectId}/export/ai-toolkit`}
@@ -408,7 +408,7 @@ function ProjectPage() {
                   <ul className="text-gray-400 text-xs space-y-1">
                     <li>• Only completed annotations are exported (not skipped tasks)</li>
                     <li>• JSONL: Each line contains {`{"a": "source_path", "b": "target_path", "prompt": "caption"}`}</li>
-                    <li>• AI-Toolkit: Creates source/ and target/ folders with matching filenames + .txt captions</li>
+                    <li>• AI-Toolkit: Creates source/ and target/ folders with matching filenames + .txt captions in both folders</li>
                   </ul>
                 </div>
               </div>

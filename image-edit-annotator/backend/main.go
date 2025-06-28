@@ -1055,10 +1055,19 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Write caption file
-		captionPath := filepath.Join(targetDir, baseName+".txt")
-		if err := os.WriteFile(captionPath, []byte(task.Prompt.String), 0644); err != nil {
-			logError(r.Context(), "Failed to write caption file", err, slog.String("path", captionPath))
+		// Write caption files in both source and target folders
+		sourceCaptionPath := filepath.Join(sourceDir, baseName+".txt")
+		targetCaptionPath := filepath.Join(targetDir, baseName+".txt")
+		
+		captionContent := []byte(task.Prompt.String)
+		
+		if err := os.WriteFile(sourceCaptionPath, captionContent, 0644); err != nil {
+			logError(r.Context(), "Failed to write source caption file", err, slog.String("path", sourceCaptionPath))
+			continue
+		}
+		
+		if err := os.WriteFile(targetCaptionPath, captionContent, 0644); err != nil {
+			logError(r.Context(), "Failed to write target caption file", err, slog.String("path", targetCaptionPath))
 			continue
 		}
 
