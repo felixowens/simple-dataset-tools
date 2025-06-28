@@ -364,6 +364,18 @@ func updateTask(task *Task) error {
 	return err
 }
 
+func taskExistsForImageA(projectID, imageAID string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM tasks WHERE project_id = ? AND image_a_id = ?",
+		projectID, imageAID,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func closeDatabase() error {
 	if db != nil {
 		return db.Close()

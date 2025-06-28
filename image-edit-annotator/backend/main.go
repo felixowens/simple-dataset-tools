@@ -558,7 +558,25 @@ func generateTasksForProject(projectID string, threshold, maxCandidates int) (*T
 	}
 
 	var totalCandidates int
+	var tasksCreated int
 	for _, img := range images {
+		// Check if task already exists for this image
+		exists, err := taskExistsForImageA(projectID, img.ID)
+		if err != nil {
+			logger.Warn("Error checking if task exists", 
+				"error", err,
+				"image_id", img.ID,
+			)
+			continue
+		}
+		if exists {
+			logger.Debug("Task already exists for image, skipping", 
+				"image_id", img.ID,
+				"project_id", projectID,
+			)
+			continue
+		}
+
 		similarImages, err := findSimilarImages(img, images, threshold)
 		if err != nil {
 			logger.Warn("Error finding similar images", 
@@ -607,12 +625,16 @@ func generateTasksForProject(projectID string, threshold, maxCandidates int) (*T
 			continue
 		}
 
+		tasksCreated++
 		totalCandidates += len(candidateIDs)
 	}
 
-	averageCandidates := float64(totalCandidates) / float64(len(images))
+	var averageCandidates float64
+	if tasksCreated > 0 {
+		averageCandidates = float64(totalCandidates) / float64(tasksCreated)
+	}
 	return &TaskGenerationResponse{
-		TasksCreated:      len(images),
+		TasksCreated:      tasksCreated,
 		AverageCandidates: averageCandidates,
 	}, nil
 }
