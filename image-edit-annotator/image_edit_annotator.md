@@ -76,21 +76,6 @@ flowchart TD
 
 ---
 
-## 5 · Export Schema Examples
-
-### 5.1  JSONL (default)
-
-```json
-{"a": "images/0001.jpg", "b": "images/0001_edit.jpg", "prompt": "turn sky pink"}
-```
-
-### 5.2  CSV
-
-```csv
-a,b,prompt
-images/0001.jpg,images/0001_edit.jpg,"turn sky pink"
-```
-
 ## Style
 
 - Keep it simple
