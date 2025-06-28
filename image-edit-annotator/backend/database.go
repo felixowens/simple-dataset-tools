@@ -1,0 +1,371 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+var db *sql.DB
+
+func initDatabase() error {
+	// Ensure data directory exists
+	dataDir := "data"
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %v", err)
+	}
+
+	// Open database connection
+	dbPath := filepath.Join(dataDir, "app.db")
+	var err error
+	db, err = sql.Open("sqlite3", dbPath+"?_foreign_keys=on")
+	if err != nil {
+		return fmt.Errorf("failed to open database: %v", err)
+	}
+
+	// Set connection pool settings
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	// Test connection
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("failed to ping database: %v", err)
+	}
+
+	// Run migrations
+	if err := runMigrations(); err != nil {
+		return fmt.Errorf("failed to run migrations: %v", err)
+	}
+
+	log.Println("Database initialized successfully")
+	return nil
+}
+
+func runMigrations() error {
+	// Create schema version table
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_version (
+			version INTEGER PRIMARY KEY,
+			applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create schema_version table: %v", err)
+	}
+
+	// Get current schema version
+	var currentVersion int
+	err = db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&currentVersion)
+	if err != nil {
+		return fmt.Errorf("failed to get current schema version: %v", err)
+	}
+
+	// Run migrations
+	migrations := []migration{
+		{1, createInitialTables},
+	}
+
+	for _, m := range migrations {
+		if m.version > currentVersion {
+			log.Printf("Running migration %d", m.version)
+			if err := m.up(); err != nil {
+				return fmt.Errorf("migration %d failed: %v", m.version, err)
+			}
+			
+			// Record migration
+			_, err = db.Exec("INSERT INTO schema_version (version) VALUES (?)", m.version)
+			if err != nil {
+				return fmt.Errorf("failed to record migration %d: %v", m.version, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+type migration struct {
+	version int
+	up      func() error
+}
+
+func createInitialTables() error {
+	queries := []string{
+		`CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			version TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE images (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			path TEXT NOT NULL,
+			phash TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE tasks (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			image_a_id TEXT NOT NULL,
+			image_b_id TEXT,
+			prompt TEXT,
+			skipped BOOLEAN DEFAULT FALSE,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+			FOREIGN KEY (image_a_id) REFERENCES images(id) ON DELETE CASCADE,
+			FOREIGN KEY (image_b_id) REFERENCES images(id) ON DELETE SET NULL
+		)`,
+		`CREATE TABLE task_candidates (
+			task_id TEXT NOT NULL,
+			image_id TEXT NOT NULL,
+			PRIMARY KEY (task_id, image_id),
+			FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+			FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX idx_images_project_id ON images(project_id)`,
+		`CREATE INDEX idx_images_phash ON images(phash)`,
+		`CREATE INDEX idx_tasks_project_id ON tasks(project_id)`,
+		`CREATE INDEX idx_tasks_image_a_id ON tasks(image_a_id)`,
+		`CREATE INDEX idx_task_candidates_task_id ON task_candidates(task_id)`,
+	}
+
+	for _, query := range queries {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("failed to execute query: %s - %v", query, err)
+		}
+	}
+
+	return nil
+}
+
+// Project database operations
+func createProject(project *Project) error {
+	_, err := db.Exec(
+		"INSERT INTO projects (id, name, version) VALUES (?, ?, ?)",
+		project.ID, project.Name, project.Version,
+	)
+	return err
+}
+
+func getProject(id string) (*Project, error) {
+	var project Project
+	err := db.QueryRow(
+		"SELECT id, name, version FROM projects WHERE id = ?", id,
+	).Scan(&project.ID, &project.Name, &project.Version)
+	
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	
+	return &project, nil
+}
+
+func listProjects() ([]Project, error) {
+	rows, err := db.Query("SELECT id, name, version FROM projects ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []Project
+	for rows.Next() {
+		var project Project
+		if err := rows.Scan(&project.ID, &project.Name, &project.Version); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+
+	return projects, rows.Err()
+}
+
+func updateProject(project *Project) error {
+	_, err := db.Exec(
+		"UPDATE projects SET name = ?, version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		project.Name, project.Version, project.ID,
+	)
+	return err
+}
+
+func deleteProject(id string) error {
+	_, err := db.Exec("DELETE FROM projects WHERE id = ?", id)
+	return err
+}
+
+// Image database operations
+func createImage(image *Image) error {
+	_, err := db.Exec(
+		"INSERT INTO images (id, project_id, path, phash) VALUES (?, ?, ?, ?)",
+		image.ID, image.ProjectID, image.Path, image.PHash,
+	)
+	return err
+}
+
+func createImages(images []Image) error {
+	if len(images) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT INTO images (id, project_id, path, phash) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, image := range images {
+		if _, err := stmt.Exec(image.ID, image.ProjectID, image.Path, image.PHash); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func getImagesByProjectID(projectID string) ([]Image, error) {
+	rows, err := db.Query(
+		"SELECT id, project_id, path, phash FROM images WHERE project_id = ? ORDER BY created_at",
+		projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var images []Image
+	for rows.Next() {
+		var image Image
+		if err := rows.Scan(&image.ID, &image.ProjectID, &image.Path, &image.PHash); err != nil {
+			return nil, err
+		}
+		images = append(images, image)
+	}
+
+	return images, rows.Err()
+}
+
+func getImage(id string) (*Image, error) {
+	var image Image
+	err := db.QueryRow(
+		"SELECT id, project_id, path, phash FROM images WHERE id = ?", id,
+	).Scan(&image.ID, &image.ProjectID, &image.Path, &image.PHash)
+	
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	
+	return &image, nil
+}
+
+// Task database operations
+func createTask(task *Task) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Insert task
+	_, err = tx.Exec(
+		"INSERT INTO tasks (id, project_id, image_a_id, image_b_id, prompt, skipped) VALUES (?, ?, ?, ?, ?, ?)",
+		task.ID, task.ProjectID, task.ImageAID, task.ImageBId, task.Prompt, task.Skipped,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Insert candidate B images
+	if len(task.CandidateBIds) > 0 {
+		stmt, err := tx.Prepare("INSERT INTO task_candidates (task_id, image_id) VALUES (?, ?)")
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, candidateID := range task.CandidateBIds {
+			if _, err := stmt.Exec(task.ID, candidateID); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func getTasksByProjectID(projectID string) ([]Task, error) {
+	rows, err := db.Query(`
+		SELECT id, project_id, image_a_id, COALESCE(image_b_id, ''), COALESCE(prompt, ''), skipped 
+		FROM tasks 
+		WHERE project_id = ? 
+		ORDER BY created_at
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var task Task
+		if err := rows.Scan(&task.ID, &task.ProjectID, &task.ImageAID, &task.ImageBId, &task.Prompt, &task.Skipped); err != nil {
+			return nil, err
+		}
+
+		// Get candidate B IDs
+		candidateRows, err := db.Query("SELECT image_id FROM task_candidates WHERE task_id = ?", task.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		var candidateIDs []string
+		for candidateRows.Next() {
+			var candidateID string
+			if err := candidateRows.Scan(&candidateID); err != nil {
+				candidateRows.Close()
+				return nil, err
+			}
+			candidateIDs = append(candidateIDs, candidateID)
+		}
+		candidateRows.Close()
+
+		task.CandidateBIds = candidateIDs
+		tasks = append(tasks, task)
+	}
+
+	return tasks, rows.Err()
+}
+
+func updateTask(task *Task) error {
+	_, err := db.Exec(
+		"UPDATE tasks SET image_b_id = ?, prompt = ?, skipped = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		task.ImageBId, task.Prompt, task.Skipped, task.ID,
+	)
+	return err
+}
+
+func closeDatabase() error {
+	if db != nil {
+		return db.Close()
+	}
+	return nil
+}

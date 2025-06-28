@@ -1,24 +1,31 @@
 package main
 
+import "time"
+
 type Project struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	ID        string    `json:"id" db:"id"`
+	Name      string    `json:"name" db:"name"`
+	Version   string    `json:"version" db:"version"`
+	CreatedAt time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
 }
 
 type Image struct {
-	ID        string `json:"id"`
-	ProjectID string `json:"projectId"`
-	Path      string `json:"path"`
-	PHash     string `json:"pHash"`
+	ID        string    `json:"id" db:"id"`
+	ProjectID string    `json:"projectId" db:"project_id"`
+	Path      string    `json:"path" db:"path"`
+	PHash     string    `json:"pHash" db:"phash"`
+	CreatedAt time.Time `json:"createdAt" db:"created_at"`
 }
 
 type Task struct {
-	ID          string   `json:"id"`
-	ProjectID   string   `json:"projectId"`
-	ImageAID    string   `json:"imageAId"`
-	ImageBId    string   `json:"imageBId"`
-	Prompt      string   `json:"prompt"`
-	Skipped     bool     `json:"skipped"`
-	CandidateBIds []string `json:"candidateBIds"`
+	ID            string    `json:"id" db:"id"`
+	ProjectID     string    `json:"projectId" db:"project_id"`
+	ImageAID      string    `json:"imageAId" db:"image_a_id"`
+	ImageBId      string    `json:"imageBId" db:"image_b_id"`
+	Prompt        string    `json:"prompt" db:"prompt"`
+	Skipped       bool      `json:"skipped" db:"skipped"`
+	CandidateBIds []string  `json:"candidateBIds"`
+	CreatedAt     time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt     time.Time `json:"updatedAt" db:"updated_at"`
 }
