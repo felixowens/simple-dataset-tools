@@ -14,7 +14,14 @@ export function TaskStatistics({ tasks }: TaskStatisticsProps) {
 
   return (
     <div className="bg-gray-700 rounded-lg p-4">
-      <h3 className="text-lg font-semibold text-white mb-4">Task Progress</h3>
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-semibold text-white">Task Progress</h3>
+        {pendingTasks === 0 && totalTasks > 0 && (
+          <div className="px-3 py-1 bg-green-600 text-white text-sm rounded-full">
+            ✓ Complete
+          </div>
+        )}
+      </div>
       
       {/* Progress Bar */}
       <div className="w-full bg-gray-600 rounded-full h-3 mb-4 overflow-hidden">

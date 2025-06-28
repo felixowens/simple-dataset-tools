@@ -41,7 +41,7 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, type Project, type Image, type TaskGenerationResponse, type Task } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, type Project, type Image, type TaskGenerationResponse, type Task } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
 import { TaskStatistics } from './components/TaskStatistics'
@@ -201,6 +201,28 @@ function ProjectPage() {
     }
   }
 
+  const handleRequeueSkipped = async () => {
+    if (!projectId) return
+    setTasksLoading(true)
+    try {
+      // Get all skipped tasks and update them to not be skipped
+      const skippedTasks = tasks.filter(t => t.skipped)
+      await Promise.all(
+        skippedTasks.map(task => 
+          updateTask(task.id, { skipped: false })
+        )
+      )
+      // Refresh tasks after re-queuing
+      fetchTasks()
+      alert(`Re-queued ${skippedTasks.length} skipped tasks`)
+    } catch (err) {
+      console.error('Error re-queuing skipped tasks:', err)
+      alert('Failed to re-queue skipped tasks')
+    } finally {
+      setTasksLoading(false)
+    }
+  }
+
   switch (pageState.status) {
     case 'loading':
       return <p className="text-white">Loading project...</p>
@@ -271,12 +293,35 @@ function ProjectPage() {
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold text-white">Task Generation</h3>
               {tasks.length > 0 && (
-                <Link
-                  to={`/projects/${projectId}/annotate`}
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
-                >
-                  Start Annotating
-                </Link>
+                <div className="flex space-x-2">
+                  <Link
+                    to={`/projects/${projectId}/annotate`}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                  >
+                    {(() => {
+                      const pendingTasks = tasks.filter(t => !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length
+                      const completedTasks = tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length
+                      if (pendingTasks === 0 && completedTasks > 0) {
+                        return 'Review Annotations'
+                      } else if (completedTasks > 0) {
+                        return 'Resume Annotating'
+                      } else {
+                        return 'Start Annotating'
+                      }
+                    })()}
+                  </Link>
+                  
+                  {/* Re-queue Skipped Button */}
+                  {tasks.filter(t => t.skipped).length > 0 && (
+                    <button
+                      onClick={handleRequeueSkipped}
+                      disabled={tasksLoading}
+                      className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50"
+                    >
+                      Re-queue Skipped ({tasks.filter(t => t.skipped).length})
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 

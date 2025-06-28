@@ -41,12 +41,15 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
       setTasks(tasksResponse.data)
       setImages(imagesResponse.data)
 
-      // Find first incomplete task
+      // Find first incomplete task (resume functionality)
       const firstIncomplete = tasksResponse.data.findIndex(t =>
         !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped
       )
       if (firstIncomplete >= 0) {
         setCurrentTaskIndex(firstIncomplete)
+      } else {
+        // If no incomplete tasks, start from beginning for review
+        setCurrentTaskIndex(0)
       }
     } catch (error) {
       console.error('Error loading data:', error)
@@ -206,6 +209,50 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Quick Actions */}
+        <div className="bg-gray-700 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-3">Quick Actions</h3>
+          <div className="space-y-2">
+            <button
+              onClick={() => {
+                const nextIncomplete = tasks.findIndex((t, idx) => 
+                  idx > currentTaskIndex && !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped
+                )
+                if (nextIncomplete >= 0) {
+                  setCurrentTaskIndex(nextIncomplete)
+                } else {
+                  // Wrap around to first incomplete
+                  const firstIncomplete = tasks.findIndex(t =>
+                    !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped
+                  )
+                  if (firstIncomplete >= 0) {
+                    setCurrentTaskIndex(firstIncomplete)
+                  }
+                }
+              }}
+              className="w-full px-3 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700"
+            >
+              Jump to Next Incomplete
+            </button>
+            
+            <button
+              onClick={() => {
+                const firstIncomplete = tasks.findIndex(t =>
+                  !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped
+                )
+                if (firstIncomplete >= 0) {
+                  setCurrentTaskIndex(firstIncomplete)
+                } else {
+                  setCurrentTaskIndex(0)
+                }
+              }}
+              className="w-full px-3 py-2 text-sm bg-gray-600 text-white rounded hover:bg-gray-500"
+            >
+              Jump to First Incomplete
+            </button>
+          </div>
         </div>
 
         {/* Task List */}
