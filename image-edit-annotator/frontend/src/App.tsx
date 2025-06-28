@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, Link } from 'react-router-dom'
-import { ping } from './api'
+import { listProjects, ping } from './api'
 
 function App() {
   const [apiStatus, setApiStatus] = useState<string>('checking...')
@@ -60,25 +60,113 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, type Project, type Image, type TaskGenerationResponse, type Task } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, listProjectsWithStats, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
 import { TaskStatistics } from './components/TaskStatistics'
 
 function Home() {
-  return (
-    <div className="p-12 text-center space-y-8">
-      <div className="max-w-2xl mx-auto">
-        <h2 className="text-3xl font-light text-gray-900 dark:text-white mb-4">
-          Welcome to your workspace
-        </h2>
-        <p className="text-lg text-gray-600 dark:text-gray-300 leading-relaxed">
-          Start by creating a new project to organize your image annotations,
-          or continue working on an existing project.
-        </p>
-      </div>
+  const [projects, setProjects] = useState<ProjectWithStats[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-      <div className="pt-8">
+  useEffect(() => {
+    const fetchProjects = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+
+        // Get basic project list
+        const projectsResponse = await listProjects()
+        const basicProjects = projectsResponse.data
+
+        // For each project, fetch images and tasks to calculate stats
+        const projectsWithStats = await Promise.all(
+          basicProjects.map(async (project) => {
+            try {
+              const [imagesResponse, tasksResponse] = await Promise.all([
+                getImages(project.id),
+                getTasks(project.id)
+              ])
+
+              const images = imagesResponse.data || []
+              const tasks = tasksResponse.data || []
+              const completedTasks = tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped)
+
+              return {
+                ...project,
+                imageCount: images.length,
+                taskCount: tasks.length,
+                completedTaskCount: completedTasks.length
+              }
+            } catch (err) {
+              console.warn(`Failed to fetch stats for project ${project.id}:`, err)
+              return {
+                ...project,
+                imageCount: 0,
+                taskCount: 0,
+                completedTaskCount: 0
+              }
+            }
+          })
+        )
+
+        setProjects(projectsWithStats)
+      } catch (err) {
+        console.error('Error fetching projects:', err)
+        setError('Failed to load projects')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchProjects()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="p-12 text-center">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-full mb-4">
+          <svg className="w-8 h-8 text-blue-600 dark:text-blue-400 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </div>
+        <h3 className="text-xl font-light text-gray-900 dark:text-white mb-2">Loading projects</h3>
+        <p className="text-gray-600 dark:text-gray-400">Please wait while we fetch your projects...</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="p-12 text-center">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full mb-4">
+          <svg className="w-8 h-8 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <h3 className="text-xl font-light text-gray-900 dark:text-white mb-2">Error loading projects</h3>
+        <p className="text-gray-600 dark:text-gray-400 mb-6">{error}</p>
+        <Link
+          to="/projects/create"
+          className="inline-flex items-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors duration-200"
+        >
+          Create Your First Project
+        </Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-8 space-y-8">
+      <div className="text-center">
+        <h2 className="text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+          Your Projects
+        </h2>
+        <p className="text-lg text-gray-600 dark:text-gray-300 leading-relaxed mb-8">
+          Manage your image annotation projects and continue where you left off.
+        </p>
+
         <Link
           to="/projects/create"
           className="group inline-flex items-center px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors duration-200"
@@ -89,6 +177,86 @@ function Home() {
           Create New Project
         </Link>
       </div>
+
+      {projects.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-full mb-4">
+            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          </div>
+          <h3 className="text-xl font-light text-gray-900 dark:text-white mb-2">No projects yet</h3>
+          <p className="text-gray-600 dark:text-gray-400">Create your first project to start annotating images.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {projects.map((project) => (
+            <Link
+              key={project.id}
+              to={`/projects/${project.id}`}
+              className="group bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 hover:border-blue-300 dark:hover:border-blue-600 transition-colors duration-200"
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    {project.name}
+                  </h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    v{project.version}
+                  </p>
+                </div>
+                <div className="ml-4 flex-shrink-0">
+                  <div className="w-3 h-3 bg-green-500 rounded-full opacity-75 group-hover:opacity-100 transition-opacity" />
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Images</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {project.imageCount}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Tasks</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {project.taskCount}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Completed</span>
+                  <span className="text-sm font-medium text-green-600 dark:text-green-400">
+                    {project.completedTaskCount} / {project.taskCount}
+                  </span>
+                </div>
+                {project.taskCount > 0 && (
+                  <div className="mt-3">
+                    <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                      <span>Progress</span>
+                      <span>{Math.round((project.completedTaskCount / project.taskCount) * 100)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                      <div
+                        className="bg-green-500 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${(project.completedTaskCount / project.taskCount) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                  <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  {project.id.substring(0, 8)}...
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

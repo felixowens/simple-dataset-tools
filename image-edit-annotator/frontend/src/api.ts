@@ -15,9 +15,20 @@ export interface Project {
   version: string;
 }
 
+export interface ProjectWithStats {
+  id: string;
+  name: string;
+  version: string;
+  imageCount: number;
+  taskCount: number;
+  completedTaskCount: number;
+  createdAt?: string;
+}
+
 export const createProject = (project: Omit<Project, 'id'>) => api.post<Project>('/projects', project);
 export const getProject = (id: string) => api.get<Project>(`/projects/${id}`);
 export const listProjects = () => api.get<Project[]>('/projects');
+export const listProjectsWithStats = () => api.get<ProjectWithStats[]>('/projects/stats');
 export const updateProject = (id: string, project: Omit<Project, 'id'>) => api.put<Project>(`/projects/${id}`, project);
 export const deleteProject = (id: string) => api.delete(`/projects/${id}`);
 
