@@ -20,6 +20,7 @@ import (
 
 	_ "image/jpeg"
 	_ "image/png"
+	_ "golang.org/x/image/webp"
 )
 
 var (
@@ -230,7 +231,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process files asynchronously
-	logInfo(r.Context(), "Upload started", 
+	logInfo(r.Context(), "Upload started",
 		slog.String("project_id", projectID),
 		slog.Int("file_count", len(files)),
 	)
@@ -290,6 +291,11 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 		reader := strings.NewReader(string(content))
 		img, _, err := image.Decode(reader)
 		if err != nil {
+			logger.Error("Invalid image format",
+				"error", err,
+				"project_id", projectID,
+				"filename", fileHeader.Filename,
+			)
 			sendProgressUpdate(projectID, ProgressUpdate{
 				ProjectID:    projectID,
 				Filename:     fileHeader.Filename,
@@ -359,7 +365,7 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 	// Store images in database
 	if len(processedImages) > 0 {
 		if err := createImages(processedImages); err != nil {
-			logger.Error("Error storing images in database", 
+			logger.Error("Error storing images in database",
 				"error", err,
 				"project_id", projectID,
 				"image_count", len(processedImages),
@@ -507,7 +513,7 @@ func findSimilarImages(targetImage Image, allImages []Image, threshold int) ([]S
 
 		imgHash, err := parseImageHash(img.PHash)
 		if err != nil {
-			logger.Warn("Failed to parse image hash", 
+			logger.Warn("Failed to parse image hash",
 				"error", err,
 				"image_id", img.ID,
 			)
@@ -516,14 +522,14 @@ func findSimilarImages(targetImage Image, allImages []Image, threshold int) ([]S
 
 		distance, err := targetHash.Distance(imgHash)
 		if err != nil {
-			logger.Warn("Failed to calculate image distance", 
+			logger.Warn("Failed to calculate image distance",
 				"error", err,
 				"image_id", img.ID,
 			)
 			continue
 		}
 
-		logger.Debug("Image distance calculated", 
+		logger.Debug("Image distance calculated",
 			"image_id", img.ID,
 			"distance", distance,
 		)
@@ -564,14 +570,14 @@ func generateTasksForProject(projectID string, threshold, maxCandidates int) (*T
 		// Check if task already exists for this image
 		exists, err := taskExistsForImageA(projectID, img.ID)
 		if err != nil {
-			logger.Warn("Error checking if task exists", 
+			logger.Warn("Error checking if task exists",
 				"error", err,
 				"image_id", img.ID,
 			)
 			continue
 		}
 		if exists {
-			logger.Debug("Task already exists for image, skipping", 
+			logger.Debug("Task already exists for image, skipping",
 				"image_id", img.ID,
 				"project_id", projectID,
 			)
@@ -580,7 +586,7 @@ func generateTasksForProject(projectID string, threshold, maxCandidates int) (*T
 
 		similarImages, err := findSimilarImages(img, images, threshold)
 		if err != nil {
-			logger.Warn("Error finding similar images", 
+			logger.Warn("Error finding similar images",
 				"error", err,
 				"image_id", img.ID,
 			)
@@ -610,14 +616,14 @@ func generateTasksForProject(projectID string, threshold, maxCandidates int) (*T
 			CandidateBIds: candidateIDs,
 		}
 
-		logger.Debug("Creating task", 
+		logger.Debug("Creating task",
 			"task_id", task.ID,
 			"project_id", projectID,
 			"image_id", img.ID,
 			"candidate_count", len(candidateIDs),
 		)
 		if err := createTask(task); err != nil {
-			logger.Error("Error creating task", 
+			logger.Error("Error creating task",
 				"error", err,
 				"task_id", task.ID,
 				"project_id", projectID,
@@ -676,7 +682,7 @@ func generateTasksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate tasks
-	logInfo(r.Context(), "Generating tasks", 
+	logInfo(r.Context(), "Generating tasks",
 		slog.String("project_id", projectID),
 		slog.Int("similarity_threshold", req.SimilarityThreshold),
 		slog.Int("max_candidates", req.MaxCandidates),
@@ -687,7 +693,7 @@ func generateTasksHandler(w http.ResponseWriter, r *http.Request) {
 		logError(r.Context(), "Failed to generate tasks", err, slog.String("project_id", projectID))
 		return
 	}
-	logInfo(r.Context(), "Tasks generated successfully", 
+	logInfo(r.Context(), "Tasks generated successfully",
 		slog.String("project_id", projectID),
 		slog.Int("tasks_created", response.TasksCreated),
 		slog.Float64("average_candidates", response.AverageCandidates),
@@ -1034,13 +1040,13 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Generate unique filename for this pair
 		baseName := fmt.Sprintf("pair_%04d", exportCount+1)
-		
+
 		// Copy source image
 		sourceImagePath := filepath.Join("data", "projects", projectID, imageA.Path)
 		destSourcePath := filepath.Join(sourceDir, baseName+filepath.Ext(imageA.Path))
 		if err := copyFile(sourceImagePath, destSourcePath); err != nil {
-			logError(r.Context(), "Failed to copy source image", err, 
-				slog.String("source", sourceImagePath), 
+			logError(r.Context(), "Failed to copy source image", err,
+				slog.String("source", sourceImagePath),
 				slog.String("dest", destSourcePath))
 			continue
 		}
@@ -1058,14 +1064,14 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 		// Write caption files in both source and target folders
 		sourceCaptionPath := filepath.Join(sourceDir, baseName+".txt")
 		targetCaptionPath := filepath.Join(targetDir, baseName+".txt")
-		
+
 		captionContent := []byte(task.Prompt.String)
-		
+
 		if err := os.WriteFile(sourceCaptionPath, captionContent, 0644); err != nil {
 			logError(r.Context(), "Failed to write source caption file", err, slog.String("path", sourceCaptionPath))
 			continue
 		}
-		
+
 		if err := os.WriteFile(targetCaptionPath, captionContent, 0644); err != nil {
 			logError(r.Context(), "Failed to write target caption file", err, slog.String("path", targetCaptionPath))
 			continue
@@ -1085,7 +1091,7 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 	// Serve the ZIP file
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_ai-toolkit.zip\"", project.Name))
-	
+
 	http.ServeFile(w, r, zipPath)
 
 	// Clean up temporary files
@@ -1094,7 +1100,7 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 		os.Remove(zipPath)
 	}()
 
-	logInfo(r.Context(), "AI-toolkit export completed", 
+	logInfo(r.Context(), "AI-toolkit export completed",
 		slog.String("project_id", projectID),
 		slog.Int("exported_pairs", exportCount))
 }
