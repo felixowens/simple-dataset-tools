@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -861,6 +862,293 @@ func serveImageHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filePath)
 }
 
+func exportJSONLHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/export/jsonl")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if project exists
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for JSONL export", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	// Get completed tasks
+	tasks, err := getTasksByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get tasks for JSONL export", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Get all images for path lookup
+	images, err := getImagesByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get images", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get images for JSONL export", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Create image lookup map
+	imageMap := make(map[string]*Image)
+	for i := range images {
+		imageMap[images[i].ID] = &images[i]
+	}
+
+	// Set response headers for file download
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_annotations.jsonl\"", project.Name))
+
+	// Write JSONL format
+	for _, task := range tasks {
+		// Only export completed tasks (not skipped, has imageB or prompt)
+		if task.Skipped || (!task.ImageBId.Valid && !task.Prompt.Valid) {
+			continue
+		}
+
+		imageA := imageMap[task.ImageAID]
+		if imageA == nil {
+			continue
+		}
+
+		// Create export record
+		record := map[string]interface{}{
+			"a": imageA.Path,
+		}
+
+		if task.ImageBId.Valid {
+			imageB := imageMap[task.ImageBId.String]
+			if imageB != nil {
+				record["b"] = imageB.Path
+			}
+		}
+
+		if task.Prompt.Valid {
+			record["prompt"] = task.Prompt.String
+		}
+
+		// Write JSON line
+		jsonData, err := json.Marshal(record)
+		if err != nil {
+			logError(r.Context(), "Failed to marshal task record", err, slog.String("task_id", task.ID))
+			continue
+		}
+
+		w.Write(jsonData)
+		w.Write([]byte("\n"))
+	}
+
+	logInfo(r.Context(), "JSONL export completed", slog.String("project_id", projectID))
+}
+
+func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/export/ai-toolkit")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if project exists
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for AI-toolkit export", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	// Get completed tasks
+	tasks, err := getTasksByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get tasks for AI-toolkit export", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Get all images for path lookup
+	images, err := getImagesByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get images", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get images for AI-toolkit export", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Create image lookup map
+	imageMap := make(map[string]*Image)
+	for i := range images {
+		imageMap[images[i].ID] = &images[i]
+	}
+
+	// Create temporary export directory
+	exportDir := filepath.Join("data", "exports", projectID+"-ai-toolkit")
+	sourceDir := filepath.Join(exportDir, "source")
+	targetDir := filepath.Join(exportDir, "target")
+
+	// Clean and create directories
+	os.RemoveAll(exportDir)
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		http.Error(w, "Failed to create export directories", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create source directory", err)
+		return
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		http.Error(w, "Failed to create export directories", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create target directory", err)
+		return
+	}
+
+	// Process completed tasks
+	exportCount := 0
+	for _, task := range tasks {
+		// Only export completed tasks with both imageB and prompt
+		if task.Skipped || !task.ImageBId.Valid || !task.Prompt.Valid {
+			continue
+		}
+
+		imageA := imageMap[task.ImageAID]
+		imageB := imageMap[task.ImageBId.String]
+		if imageA == nil || imageB == nil {
+			continue
+		}
+
+		// Generate unique filename for this pair
+		baseName := fmt.Sprintf("pair_%04d", exportCount+1)
+		
+		// Copy source image
+		sourceImagePath := filepath.Join("data", "projects", projectID, imageA.Path)
+		destSourcePath := filepath.Join(sourceDir, baseName+filepath.Ext(imageA.Path))
+		if err := copyFile(sourceImagePath, destSourcePath); err != nil {
+			logError(r.Context(), "Failed to copy source image", err, 
+				slog.String("source", sourceImagePath), 
+				slog.String("dest", destSourcePath))
+			continue
+		}
+
+		// Copy target image
+		targetImagePath := filepath.Join("data", "projects", projectID, imageB.Path)
+		destTargetPath := filepath.Join(targetDir, baseName+filepath.Ext(imageB.Path))
+		if err := copyFile(targetImagePath, destTargetPath); err != nil {
+			logError(r.Context(), "Failed to copy target image", err,
+				slog.String("source", targetImagePath),
+				slog.String("dest", destTargetPath))
+			continue
+		}
+
+		// Write caption file
+		captionPath := filepath.Join(targetDir, baseName+".txt")
+		if err := os.WriteFile(captionPath, []byte(task.Prompt.String), 0644); err != nil {
+			logError(r.Context(), "Failed to write caption file", err, slog.String("path", captionPath))
+			continue
+		}
+
+		exportCount++
+	}
+
+	// Create ZIP archive
+	zipPath := filepath.Join("data", "exports", project.Name+"_ai-toolkit.zip")
+	if err := createZipArchive(exportDir, zipPath); err != nil {
+		http.Error(w, "Failed to create ZIP archive", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create ZIP archive", err)
+		return
+	}
+
+	// Serve the ZIP file
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_ai-toolkit.zip\"", project.Name))
+	
+	http.ServeFile(w, r, zipPath)
+
+	// Clean up temporary files
+	go func() {
+		os.RemoveAll(exportDir)
+		os.Remove(zipPath)
+	}()
+
+	logInfo(r.Context(), "AI-toolkit export completed", 
+		slog.String("project_id", projectID),
+		slog.Int("exported_pairs", exportCount))
+}
+
+// Helper function to copy files
+func copyFile(src, dst string) error {
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	_, err = io.Copy(destination, source)
+	return err
+}
+
+// Helper function to create ZIP archive
+func createZipArchive(sourceDir, zipPath string) error {
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		return err
+	}
+	defer zipFile.Close()
+
+	zipWriter := zip.NewWriter(zipFile)
+	defer zipWriter.Close()
+
+	return filepath.Walk(sourceDir, func(filePath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(sourceDir, filePath)
+		if err != nil {
+			return err
+		}
+
+		zipFileWriter, err := zipWriter.Create(relPath)
+		if err != nil {
+			return err
+		}
+
+		file, err := os.Open(filePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		_, err = io.Copy(zipFileWriter, file)
+		return err
+	})
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins for now
@@ -913,6 +1201,14 @@ func main() {
 		}
 		if strings.Contains(r.URL.Path, "/images/") && r.Method == http.MethodGet {
 			serveImageHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/export/jsonl") && r.Method == http.MethodGet {
+			exportJSONLHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/export/ai-toolkit") && r.Method == http.MethodGet {
+			exportAIToolkitHandler(w, r)
 			return
 		}
 		switch r.Method {

@@ -41,7 +41,7 @@ A lightweight, single‑developer tool that lets you import a folder of images, 
 | **P4** | *Task generator*    | ① For each image, fetch N most‑similar (self‑join on Hamming ≤ h). ② Insert `Task` rows with candidate B list. If there were no similar images then still add the task but we'll allow the user to select from the image pool in the UI.                                                  |
 | **P5** | *Annotation UI*     | ① Wizard page shows A image + candidate B thumbnails. Work flow is to go through each task and pick the B image and then describe the edit caption. Tasks are also allowed to be skipped or removed. ② Prompt textarea autofocused; PUT `/task/:id`. |
 | **P6** | *Progress & Resume* | ① Dashboard counts (total / done / skipped). ② Resume button jumps to first unfinished. ③ Option to re‑queue skipped.                                           |
-| **P7** | *Export*            | ① `/export/jsonl` streams file. ② `/export/csv` alternative schema. ③ Download triggers in browser.                                                             |
+| **P7** | *Export*            | ① `/export/jsonl` JSONL file. ② `/export/ai-toolkit` schema which export 2 folder `source` and `target` with the respective images using identical filenames per pair as well as a `.txt` for the caption with the same name. ③ Download triggers in browser.                                                             |
 | **P8** | *Polish*            | ① Make the UI look pretty, clean, elegant etc. Like the sort of product Apple would release.                                                                                   |
 
 ---

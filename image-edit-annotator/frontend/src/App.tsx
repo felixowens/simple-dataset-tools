@@ -350,6 +350,71 @@ function ProjectPage() {
             </div>
           </div>
 
+          {/* Export Section */}
+          {tasks.length > 0 && tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length > 0 && (
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold text-white">Export Annotations</h3>
+                <div className="text-sm text-gray-400">
+                  {tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length} completed annotations
+                </div>
+              </div>
+
+              <div className="bg-gray-700 rounded-lg p-4 space-y-4">
+                <p className="text-gray-300 text-sm">
+                  Export your completed annotations in different formats for machine learning training.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* JSONL Export */}
+                  <div className="bg-gray-600 rounded-lg p-4">
+                    <h4 className="text-white font-medium mb-2">JSONL Format</h4>
+                    <p className="text-gray-300 text-sm mb-3">
+                      Standard format with source/target paths and prompts. One JSON object per line.
+                    </p>
+                    <a
+                      href={`http://localhost:8080/projects/${projectId}/export/jsonl`}
+                      download
+                      className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                    >
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Download JSONL
+                    </a>
+                  </div>
+
+                  {/* AI-Toolkit Export */}
+                  <div className="bg-gray-600 rounded-lg p-4">
+                    <h4 className="text-white font-medium mb-2">AI-Toolkit Format</h4>
+                    <p className="text-gray-300 text-sm mb-3">
+                      ZIP archive with source/target folders and caption text files for training.
+                    </p>
+                    <a
+                      href={`http://localhost:8080/projects/${projectId}/export/ai-toolkit`}
+                      download
+                      className="inline-flex items-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+                    >
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
+                      </svg>
+                      Download ZIP
+                    </a>
+                  </div>
+                </div>
+
+                <div className="bg-gray-800 rounded p-3">
+                  <h5 className="text-white text-sm font-medium mb-2">Export Details:</h5>
+                  <ul className="text-gray-400 text-xs space-y-1">
+                    <li>• Only completed annotations are exported (not skipped tasks)</li>
+                    <li>• JSONL: Each line contains {`{"a": "source_path", "b": "target_path", "prompt": "caption"}`}</li>
+                    <li>• AI-Toolkit: Creates source/ and target/ folders with matching filenames + .txt captions</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Task List */}
           {tasks.length > 0 && (
             <div>
