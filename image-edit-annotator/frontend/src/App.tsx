@@ -20,8 +20,8 @@ function App() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center p-4">
-      <div className="bg-gray-700 p-8 rounded-xl shadow-2xl max-w-xl w-full text-white">
+    <body className="min-h-screen bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center p-4">
+      <div className="bg-gray-700 p-8 rounded-xl shadow-2xl max-w-7xl w-full text-white">
         <h1 className="text-3xl font-extrabold text-white mb-6 text-center">
           Image Edit Annotator
         </h1>
@@ -35,12 +35,12 @@ function App() {
           <Route path="/projects/:projectId" element={<ProjectPage />} />
         </Routes>
       </div>
-    </div>
+    </body>
   )
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, type Project, type Image } from './api'
+import { createProject, getProject, getImages, generateTasks, type Project, type Image, type TaskGenerationResponse } from './api'
 import { FileUpload } from './components/FileUpload'
 
 function Home() {
@@ -125,6 +125,7 @@ function ProjectPage() {
   const [pageState, setPageState] = useState<ProjectPageState>({ status: 'loading' })
   const [images, setImages] = useState<Image[]>([])
   const [imagesLoading, setImagesLoading] = useState(false)
+  const [taskGeneration, setTaskGeneration] = useState<{ loading: boolean; result?: TaskGenerationResponse }>({ loading: false })
 
   const fetchImages = async () => {
     if (!projectId) return
@@ -167,6 +168,18 @@ function ProjectPage() {
     fetchImages()
   }
 
+  const handleGenerateTasks = async () => {
+    if (!projectId) return
+    setTaskGeneration({ loading: true })
+    try {
+      const response = await generateTasks(projectId)
+      setTaskGeneration({ loading: false, result: response.data })
+    } catch (err) {
+      console.error('Error generating tasks:', err)
+      setTaskGeneration({ loading: false })
+    }
+  }
+
   switch (pageState.status) {
     case 'loading':
       return <p className="text-white">Loading project...</p>
@@ -184,8 +197,8 @@ function ProjectPage() {
 
           <div>
             <h3 className="text-lg font-semibold text-white mb-4">Upload Images</h3>
-            <FileUpload 
-              projectId={project.id} 
+            <FileUpload
+              projectId={project.id}
               onUploadComplete={handleUploadComplete}
             />
           </div>
@@ -201,7 +214,7 @@ function ProjectPage() {
                 {imagesLoading ? 'Loading...' : 'Refresh'}
               </button>
             </div>
-            
+
             {images.length === 0 ? (
               <div className="text-center py-8 text-gray-400">
                 <p>No images uploaded yet.</p>
@@ -226,6 +239,36 @@ function ProjectPage() {
                 ))}
               </div>
             )}
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-white">Task Generation</h3>
+            </div>
+
+            <div className="bg-gray-700 rounded-lg p-4 space-y-4">
+              <p className="text-gray-300 text-sm">
+                Generate annotation tasks by finding similar images for each uploaded image.
+              </p>
+
+              <button
+                onClick={handleGenerateTasks}
+                disabled={taskGeneration.loading || images.length === 0}
+                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {taskGeneration.loading ? 'Generating Tasks...' : 'Generate Tasks'}
+              </button>
+
+              {taskGeneration.result && (
+                <div className="mt-4 p-3 bg-green-900/30 border border-green-600/30 rounded">
+                  <h4 className="text-green-400 font-medium mb-2">Tasks Generated Successfully!</h4>
+                  <div className="text-green-300 text-sm space-y-1">
+                    <p>Tasks Created: {taskGeneration.result.tasksCreated}</p>
+                    <p>Average Candidates per Task: {taskGeneration.result.averageCandidates.toFixed(1)}</p>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )

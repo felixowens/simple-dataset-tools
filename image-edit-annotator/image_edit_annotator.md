@@ -37,7 +37,7 @@ A lightweight, single‑developer tool that lets you import a folder of images, 
 | ------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **P1** | *Project skeleton*  | ① `pnpm create vite` → starter React app with Typescript. API stub with `/ping`. ③ CORS + Axios handshake.                                                                |
 | **P2** | *Data model*        | ① Define entities `Project`, `Image`, `Task`. ② CRUD endpoints. ③ React form to create / open project.                                                 |
-| **P3** | *Ingest & Hash*     | ① Drag‑and‑drop `<input type="file" multiple>` → POST `/upload`. ② Backend saves into `projects/<id>/images/`. ③ Async pHash compute; SSE progress bar.         |
+| **P3** | *Ingest & Hash*     | ① Drag‑and‑drop `<input type="file" multiple>` → POST `/upload`. ② Backend saves into `projects/<id>/images/`. ③ Async pHash compute;         |
 | **P4** | *Task generator*    | ① For each image, fetch N most‑similar (self‑join on Hamming ≤ h). ② Insert `Task` rows with candidate B list. If there were no similar images then still add the task but we'll allow the user to select from the image pool in the UI.                                                  |
 | **P5** | *Annotation UI*     | ① Wizard page shows A image + candidate B thumbnails. ② Keyboard shortcuts `1‑9` to pick, `s` skip, `d` delete. ③ Prompt textarea autofocused; PUT `/task/:id`. |
 | **P6** | *Progress & Resume* | ① Dashboard counts (total / done / skipped). ② Resume button jumps to first unfinished. ③ Option to re‑queue skipped.                                           |
@@ -100,3 +100,4 @@ images/0001.jpg,images/0001_edit.jpg,"turn sky pink"
 - Make impossible states unrepresentable, e.g use discriminated union state object rather than multiple states for managing request lifecycle.
 
 - Run build commands on fontend/backend to ensure no errors.
+- This project is in an experimental/WIP stage, don't worry about keeping things backwards compatible. Deleting existing code is perfectly fine. You can delete existing database data and modify the migrations and reset the db.

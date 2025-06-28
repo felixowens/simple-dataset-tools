@@ -1,11 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"image"
 	"io"
-	"log"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -54,7 +55,7 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := createProject(&project); err != nil {
 		http.Error(w, "Failed to create project", http.StatusInternalServerError)
-		log.Printf("Error creating project: %v", err)
+		logError(r.Context(), "Failed to create project", err, slog.String("project_name", project.Name))
 		return
 	}
 
@@ -77,7 +78,7 @@ func getProjectHandler(w http.ResponseWriter, r *http.Request) {
 	project, err := getProject(id)
 	if err != nil {
 		http.Error(w, "Failed to get project", http.StatusInternalServerError)
-		log.Printf("Error getting project: %v", err)
+		logError(r.Context(), "Failed to get project", err, slog.String("project_id", id))
 		return
 	}
 
@@ -99,7 +100,7 @@ func listProjectsHandler(w http.ResponseWriter, r *http.Request) {
 	projects, err := listProjects()
 	if err != nil {
 		http.Error(w, "Failed to list projects", http.StatusInternalServerError)
-		log.Printf("Error listing projects: %v", err)
+		logError(r.Context(), "Failed to list projects", err)
 		return
 	}
 
@@ -131,7 +132,7 @@ func updateProjectHandler(w http.ResponseWriter, r *http.Request) {
 	existingProject, err := getProject(id)
 	if err != nil {
 		http.Error(w, "Failed to get project", http.StatusInternalServerError)
-		log.Printf("Error getting project: %v", err)
+		logError(r.Context(), "Failed to get project for update", err, slog.String("project_id", id))
 		return
 	}
 	if existingProject == nil {
@@ -141,7 +142,7 @@ func updateProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := updateProject(&updatedProject); err != nil {
 		http.Error(w, "Failed to update project", http.StatusInternalServerError)
-		log.Printf("Error updating project: %v", err)
+		logError(r.Context(), "Failed to update project", err, slog.String("project_id", id))
 		return
 	}
 
@@ -165,7 +166,7 @@ func deleteProjectHandler(w http.ResponseWriter, r *http.Request) {
 	existingProject, err := getProject(id)
 	if err != nil {
 		http.Error(w, "Failed to get project", http.StatusInternalServerError)
-		log.Printf("Error getting project: %v", err)
+		logError(r.Context(), "Failed to get project for deletion", err, slog.String("project_id", id))
 		return
 	}
 	if existingProject == nil {
@@ -175,7 +176,7 @@ func deleteProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := deleteProject(id); err != nil {
 		http.Error(w, "Failed to delete project", http.StatusInternalServerError)
-		log.Printf("Error deleting project: %v", err)
+		logError(r.Context(), "Failed to delete project", err, slog.String("project_id", id))
 		return
 	}
 
@@ -198,7 +199,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	project, err := getProject(projectID)
 	if err != nil {
 		http.Error(w, "Failed to get project", http.StatusInternalServerError)
-		log.Printf("Error getting project: %v", err)
+		logError(r.Context(), "Failed to get project for upload", err, slog.String("project_id", projectID))
 		return
 	}
 	if project == nil {
@@ -228,6 +229,10 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process files asynchronously
+	logInfo(r.Context(), "Upload started", 
+		slog.String("project_id", projectID),
+		slog.Int("file_count", len(files)),
+	)
 	go processUploadedFiles(projectID, files, projectDir)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -353,7 +358,11 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 	// Store images in database
 	if len(processedImages) > 0 {
 		if err := createImages(processedImages); err != nil {
-			log.Printf("Error storing images in database: %v", err)
+			logger.Error("Error storing images in database", 
+				"error", err,
+				"project_id", projectID,
+				"image_count", len(processedImages),
+			)
 			sendProgressUpdate(projectID, ProgressUpdate{
 				ProjectID:    projectID,
 				Progress:     total,
@@ -363,6 +372,10 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 			})
 			return
 		}
+		logger.Info("Images stored successfully",
+			"project_id", projectID,
+			"image_count", len(processedImages),
+		)
 	}
 
 	// Send completion update
@@ -448,7 +461,7 @@ func getImagesHandler(w http.ResponseWriter, r *http.Request) {
 	projectImages, err := getImagesByProjectID(projectID)
 	if err != nil {
 		http.Error(w, "Failed to get images", http.StatusInternalServerError)
-		log.Printf("Error getting images: %v", err)
+		logError(r.Context(), "Failed to get images", err, slog.String("project_id", projectID))
 		return
 	}
 
@@ -458,6 +471,207 @@ func getImagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(projectImages)
+}
+
+type SimilarImage struct {
+	Image    Image
+	Distance int
+}
+
+type TaskGenerationRequest struct {
+	SimilarityThreshold int `json:"similarityThreshold"`
+	MaxCandidates       int `json:"maxCandidates"`
+}
+
+type TaskGenerationResponse struct {
+	TasksCreated      int     `json:"tasksCreated"`
+	AverageCandidates float64 `json:"averageCandidates"`
+}
+
+func parseImageHash(hashString string) (*goimagehash.ImageHash, error) {
+	return goimagehash.ImageHashFromString(hashString)
+}
+
+func findSimilarImages(targetImage Image, allImages []Image, threshold int) ([]SimilarImage, error) {
+	targetHash, err := parseImageHash(targetImage.PHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse target hash: %v", err)
+	}
+
+	var similar []SimilarImage
+	for _, img := range allImages {
+		if img.ID == targetImage.ID {
+			continue
+		}
+
+		imgHash, err := parseImageHash(img.PHash)
+		if err != nil {
+			logger.Warn("Failed to parse image hash", 
+				"error", err,
+				"image_id", img.ID,
+			)
+			continue
+		}
+
+		distance, err := targetHash.Distance(imgHash)
+		if err != nil {
+			logger.Warn("Failed to calculate image distance", 
+				"error", err,
+				"image_id", img.ID,
+			)
+			continue
+		}
+
+		logger.Debug("Image distance calculated", 
+			"image_id", img.ID,
+			"distance", distance,
+		)
+
+		if distance <= threshold {
+			similar = append(similar, SimilarImage{
+				Image:    img,
+				Distance: distance,
+			})
+		}
+	}
+
+	// Sort by distance (most similar first)
+	for i := 0; i < len(similar)-1; i++ {
+		for j := i + 1; j < len(similar); j++ {
+			if similar[i].Distance > similar[j].Distance {
+				similar[i], similar[j] = similar[j], similar[i]
+			}
+		}
+	}
+
+	return similar, nil
+}
+
+func generateTasksForProject(projectID string, threshold, maxCandidates int) (*TaskGenerationResponse, error) {
+	images, err := getImagesByProjectID(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get images: %v", err)
+	}
+
+	if len(images) == 0 {
+		return &TaskGenerationResponse{TasksCreated: 0, AverageCandidates: 0}, nil
+	}
+
+	var totalCandidates int
+	for _, img := range images {
+		similarImages, err := findSimilarImages(img, images, threshold)
+		if err != nil {
+			logger.Warn("Error finding similar images", 
+				"error", err,
+				"image_id", img.ID,
+			)
+			continue
+		}
+
+		// Limit candidates
+		candidates := similarImages
+		if len(candidates) > maxCandidates {
+			candidates = candidates[:maxCandidates]
+		}
+
+		// Extract candidate IDs
+		var candidateIDs []string
+		for _, candidate := range candidates {
+			candidateIDs = append(candidateIDs, candidate.Image.ID)
+		}
+
+		// Create task
+		task := &Task{
+			ID:            uuid.New().String(),
+			ProjectID:     projectID,
+			ImageAID:      img.ID,
+			ImageBId:      sql.NullString{}, // Will be set during annotation
+			Prompt:        sql.NullString{}, // Will be set during annotation
+			Skipped:       false,
+			CandidateBIds: candidateIDs,
+		}
+
+		logger.Debug("Creating task", 
+			"task_id", task.ID,
+			"project_id", projectID,
+			"image_id", img.ID,
+			"candidate_count", len(candidateIDs),
+		)
+		if err := createTask(task); err != nil {
+			logger.Error("Error creating task", 
+				"error", err,
+				"task_id", task.ID,
+				"project_id", projectID,
+				"image_id", img.ID,
+			)
+			continue
+		}
+
+		totalCandidates += len(candidateIDs)
+	}
+
+	averageCandidates := float64(totalCandidates) / float64(len(images))
+	return &TaskGenerationResponse{
+		TasksCreated:      len(images),
+		AverageCandidates: averageCandidates,
+	}, nil
+}
+
+func generateTasksHandler(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/generate-tasks")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if project exists
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for task generation", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	// Parse request body
+	var req TaskGenerationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Use defaults if parsing fails
+		req.SimilarityThreshold = 10
+		req.MaxCandidates = 5
+	}
+
+	// Validate parameters
+	if req.SimilarityThreshold <= 0 {
+		req.SimilarityThreshold = 10
+	}
+	if req.MaxCandidates <= 0 {
+		req.MaxCandidates = 5
+	}
+
+	// Generate tasks
+	logInfo(r.Context(), "Generating tasks", 
+		slog.String("project_id", projectID),
+		slog.Int("similarity_threshold", req.SimilarityThreshold),
+		slog.Int("max_candidates", req.MaxCandidates),
+	)
+	response, err := generateTasksForProject(projectID, req.SimilarityThreshold, req.MaxCandidates)
+	if err != nil {
+		http.Error(w, "Failed to generate tasks", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to generate tasks", err, slog.String("project_id", projectID))
+		return
+	}
+	logInfo(r.Context(), "Tasks generated successfully", 
+		slog.String("project_id", projectID),
+		slog.Int("tasks_created", response.TasksCreated),
+		slog.Float64("average_candidates", response.AverageCandidates),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -476,9 +690,16 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	// Initialize logger
+	if err := initLogger(); err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Initialize database
 	if err := initDatabase(); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		logger.Error("Failed to initialize database", "error", err)
+		os.Exit(1)
 	}
 	defer closeDatabase()
 
@@ -495,6 +716,10 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/projects/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/generate-tasks") && r.Method == http.MethodPost {
+			generateTasksHandler(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getProjectHandler(w, r)
@@ -510,6 +735,9 @@ func main() {
 	mux.HandleFunc("/progress", progressHandler)
 	mux.HandleFunc("/images", getImagesHandler)
 
-	fmt.Println("Server listening on port 8080...")
-	log.Fatal(http.ListenAndServe(":8080", corsMiddleware(mux)))
+	logger.Info("Server starting", "port", 8080)
+	if err := http.ListenAndServe(":8080", loggingMiddleware(corsMiddleware(mux))); err != nil {
+		logger.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
 }

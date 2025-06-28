@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -43,7 +42,10 @@ func initDatabase() error {
 		return fmt.Errorf("failed to run migrations: %v", err)
 	}
 
-	log.Println("Database initialized successfully")
+	logger.Info("Database initialized successfully", 
+		"db_path", dbPath,
+		"max_connections", 25,
+	)
 	return nil
 }
 
@@ -73,16 +75,17 @@ func runMigrations() error {
 
 	for _, m := range migrations {
 		if m.version > currentVersion {
-			log.Printf("Running migration %d", m.version)
+			logger.Info("Running database migration", "version", m.version)
 			if err := m.up(); err != nil {
 				return fmt.Errorf("migration %d failed: %v", m.version, err)
 			}
-			
+
 			// Record migration
 			_, err = db.Exec("INSERT INTO schema_version (version) VALUES (?)", m.version)
 			if err != nil {
 				return fmt.Errorf("failed to record migration %d: %v", m.version, err)
 			}
+			logger.Info("Migration completed successfully", "version", m.version)
 		}
 	}
 
@@ -161,14 +164,14 @@ func getProject(id string) (*Project, error) {
 	err := db.QueryRow(
 		"SELECT id, name, version FROM projects WHERE id = ?", id,
 	).Scan(&project.ID, &project.Name, &project.Version)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &project, nil
 }
 
@@ -266,14 +269,14 @@ func getImage(id string) (*Image, error) {
 	err := db.QueryRow(
 		"SELECT id, project_id, path, phash FROM images WHERE id = ?", id,
 	).Scan(&image.ID, &image.ProjectID, &image.Path, &image.PHash)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &image, nil
 }
 
@@ -286,10 +289,8 @@ func createTask(task *Task) error {
 	defer tx.Rollback()
 
 	// Insert task
-	_, err = tx.Exec(
-		"INSERT INTO tasks (id, project_id, image_a_id, image_b_id, prompt, skipped) VALUES (?, ?, ?, ?, ?, ?)",
-		task.ID, task.ProjectID, task.ImageAID, task.ImageBId, task.Prompt, task.Skipped,
-	)
+	query := "INSERT INTO tasks (id, project_id, image_a_id, image_b_id, prompt, skipped) VALUES (?, ?, ?, ?, ?, ?)"
+	_, err = tx.Exec(query, task.ID, task.ProjectID, task.ImageAID, task.ImageBId, task.Prompt, task.Skipped)
 	if err != nil {
 		return err
 	}
@@ -314,7 +315,7 @@ func createTask(task *Task) error {
 
 func getTasksByProjectID(projectID string) ([]Task, error) {
 	rows, err := db.Query(`
-		SELECT id, project_id, image_a_id, COALESCE(image_b_id, ''), COALESCE(prompt, ''), skipped 
+		SELECT id, project_id, image_a_id, image_b_id, prompt, skipped 
 		FROM tasks 
 		WHERE project_id = ? 
 		ORDER BY created_at

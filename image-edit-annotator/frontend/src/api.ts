@@ -55,3 +55,26 @@ export const getImages = (projectId: string) => api.get<Image[]>(`/images?projec
 export const createProgressEventSource = (projectId: string) => {
   return new EventSource(`${API_BASE_URL}/progress?projectId=${projectId}`);
 };
+
+export interface Task {
+  id: string;
+  projectId: string;
+  imageAId: string;
+  imageBId: string;
+  prompt: string;
+  skipped: boolean;
+  candidateBIds: string[];
+}
+
+export interface TaskGenerationRequest {
+  similarityThreshold?: number;
+  maxCandidates?: number;
+}
+
+export interface TaskGenerationResponse {
+  tasksCreated: number;
+  averageCandidates: number;
+}
+
+export const generateTasks = (projectId: string, request?: TaskGenerationRequest) => 
+  api.post<TaskGenerationResponse>(`/projects/${projectId}/generate-tasks`, request || {});
