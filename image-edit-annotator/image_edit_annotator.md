@@ -23,11 +23,9 @@ A lightweight, single‑developer tool that lets you import a folder of images, 
 | ------------- | ---------------------------------------------- | ----------------------------------------------------------------------- |
 | UI            | **React + Vite + TypeScript + Tailwind**       | Instant dev server, utility CSS, strong TS DX.                          |
 | State         | React Context + `useReducer` + URLSearchParams | URL encodes the wizard step & IDs, context holds transient bits.        |
-| Backend       | **FastAPI (Python 3.12)**                      | Minimal boilerplate, async, first‑class type hints, Uvicorn dev server. |
-| DB            | **SQLite via SQLModel**                        | File‑backed, shipped in stdlib; zero infra.                             |
-| Image hashing | **imagehash + Pillow**                         | One‑liner `imagehash.phash(Image.open(path))`.                          |
-| Messaging     | **Server‑Sent Events (SSE)**                   | Push hash progress to UI without websocket boilerplate.                 |
-| Packaging     | Pure `venv` + `npm` scripts                    | Keep onboarding friction near zero.                                     |
+| Backend       | **Golang**                      | Minimal boilerplate, async, first‑class type hints, Uvicorn dev server. |
+| DB            | **SQLite**                        | File‑backed, shipped in stdlib; zero infra.                             |
+| Image hashing | **goimagehash**                         | One‑liner `imagehash.phash(Image.open(path))`.                          |
 
 ---
 
@@ -37,8 +35,8 @@ A lightweight, single‑developer tool that lets you import a folder of images, 
 
 | Phase  | Goal                | Key Steps                                                                                                                                                       |
 | ------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P1** | *Project skeleton*  | ① `pnpm create vite` → starter React app with Typescript. ② FastAPI stub with `/ping`. ③ CORS + Axios handshake.                                                                |
-| **P2** | *Data model*        | ① Define SQLModel entities `Project`, `Image`, `Task`. ② CRUD endpoints. ③ React form to create / open project.                                                 |
+| **P1** | *Project skeleton*  | ① `pnpm create vite` → starter React app with Typescript. API stub with `/ping`. ③ CORS + Axios handshake.                                                                |
+| **P2** | *Data model*        | ① Define entities `Project`, `Image`, `Task`. ② CRUD endpoints. ③ React form to create / open project.                                                 |
 | **P3** | *Ingest & Hash*     | ① Drag‑and‑drop `<input type="file" multiple>` → POST `/upload`. ② Backend saves into `projects/<id>/images/`. ③ Async pHash compute; SSE progress bar.         |
 | **P4** | *Task generator*    | ① For each image, fetch N most‑similar (self‑join on Hamming ≤ h). ② Insert `Task` rows with candidate B list. If there were no similar images then still add the task but we'll allow the user to select from the image pool in the UI.                                                  |
 | **P5** | *Annotation UI*     | ① Wizard page shows A image + candidate B thumbnails. ② Keyboard shortcuts `1‑9` to pick, `s` skip, `d` delete. ③ Prompt textarea autofocused; PUT `/task/:id`. |
@@ -100,3 +98,5 @@ images/0001.jpg,images/0001_edit.jpg,"turn sky pink"
 - Prefer storing application state in the URL where possible.
 - Build on standards (e.g Web APIs like `new URL`, `intl` are a good start).
 - Make impossible states unrepresentable, e.g use discriminated union state object rather than multiple states for managing request lifecycle.
+
+- Run build commands on fontend/backend to ensure no errors.
