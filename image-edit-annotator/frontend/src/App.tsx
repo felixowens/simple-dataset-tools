@@ -33,6 +33,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/projects/create" element={<ProjectForm />} />
           <Route path="/projects/:projectId" element={<ProjectPage />} />
+          <Route path="/projects/:projectId/annotate" element={<AnnotationPage />} />
         </Routes>
       </div>
     </body>
@@ -40,8 +41,10 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, type Project, type Image, type TaskGenerationResponse } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, type Project, type Image, type TaskGenerationResponse, type Task } from './api'
 import { FileUpload } from './components/FileUpload'
+import { AnnotationWizard } from './components/AnnotationWizard'
+import { TaskStatistics } from './components/TaskStatistics'
 
 function Home() {
   return (
@@ -125,6 +128,8 @@ function ProjectPage() {
   const [pageState, setPageState] = useState<ProjectPageState>({ status: 'loading' })
   const [images, setImages] = useState<Image[]>([])
   const [imagesLoading, setImagesLoading] = useState(false)
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [tasksLoading, setTasksLoading] = useState(false)
   const [taskGeneration, setTaskGeneration] = useState<{ loading: boolean; result?: TaskGenerationResponse }>({ loading: false })
 
   const fetchImages = async () => {
@@ -137,6 +142,19 @@ function ProjectPage() {
       console.error('Error fetching images:', err)
     } finally {
       setImagesLoading(false)
+    }
+  }
+
+  const fetchTasks = async () => {
+    if (!projectId) return
+    setTasksLoading(true)
+    try {
+      const response = await getTasks(projectId)
+      setTasks(response.data)
+    } catch (err) {
+      console.error('Error fetching tasks:', err)
+    } finally {
+      setTasksLoading(false)
     }
   }
 
@@ -161,6 +179,7 @@ function ProjectPage() {
   useEffect(() => {
     if (pageState.status === 'success') {
       fetchImages()
+      fetchTasks()
     }
   }, [pageState.status, projectId])
 
@@ -174,6 +193,8 @@ function ProjectPage() {
     try {
       const response = await generateTasks(projectId)
       setTaskGeneration({ loading: false, result: response.data })
+      // Refresh tasks after generation
+      fetchTasks()
     } catch (err) {
       console.error('Error generating tasks:', err)
       setTaskGeneration({ loading: false })
@@ -241,9 +262,22 @@ function ProjectPage() {
             )}
           </div>
 
+          {/* Task Statistics */}
+          {tasks.length > 0 && (
+            <TaskStatistics tasks={tasks} />
+          )}
+
           <div>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold text-white">Task Generation</h3>
+              {tasks.length > 0 && (
+                <Link
+                  to={`/projects/${projectId}/annotate`}
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                >
+                  Start Annotating
+                </Link>
+              )}
             </div>
 
             <div className="bg-gray-700 rounded-lg p-4 space-y-4">
@@ -270,11 +304,91 @@ function ProjectPage() {
               )}
             </div>
           </div>
+
+          {/* Task List */}
+          {tasks.length > 0 && (
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold text-white">Tasks ({tasks.length})</h3>
+                <button
+                  onClick={fetchTasks}
+                  disabled={tasksLoading}
+                  className="px-3 py-1 text-sm bg-gray-600 text-white rounded hover:bg-gray-500 disabled:opacity-50"
+                >
+                  {tasksLoading ? 'Loading...' : 'Refresh'}
+                </button>
+              </div>
+
+              <div className="bg-gray-700 rounded-lg overflow-hidden">
+                <div className="max-h-64 overflow-y-auto">
+                  {tasks.map((task, index) => {
+                    const isCompleted = (task.imageBId?.Valid || task.prompt?.Valid) && !task.skipped
+                    const isSkipped = task.skipped
+                    
+                    return (
+                      <div
+                        key={task.id}
+                        className={`flex items-center justify-between p-3 border-b border-gray-600 last:border-b-0 ${
+                          isCompleted ? 'bg-green-900/20' : 
+                          isSkipped ? 'bg-yellow-900/20' : 
+                          'bg-gray-800/50'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <div className="text-sm font-mono text-gray-400">
+                            #{index + 1}
+                          </div>
+                          <div className={`w-3 h-3 rounded-full ${
+                            isCompleted ? 'bg-green-500' :
+                            isSkipped ? 'bg-yellow-500' :
+                            'bg-gray-500'
+                          }`} />
+                          <div className="text-sm text-white">
+                            Task {task.id.substring(0, 8)}...
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center space-x-2">
+                          <div className={`px-2 py-1 rounded text-xs font-medium ${
+                            isCompleted ? 'bg-green-600 text-white' :
+                            isSkipped ? 'bg-yellow-600 text-white' :
+                            'bg-gray-600 text-gray-300'
+                          }`}>
+                            {isCompleted ? 'Completed' : isSkipped ? 'Skipped' : 'Pending'}
+                          </div>
+                          
+                          {task.candidateBIds && task.candidateBIds.length > 0 && (
+                            <div className="text-xs text-gray-400">
+                              {task.candidateBIds.length} candidates
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )
     default:
       return null
   }
+}
+
+function AnnotationPage() {
+  const { projectId } = useParams<{ projectId: string }>()
+  
+  if (!projectId) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-red-400">Project ID is missing</p>
+      </div>
+    )
+  }
+
+  return <AnnotationWizard projectId={projectId} />
 }
 
 export default App

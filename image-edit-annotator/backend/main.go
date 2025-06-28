@@ -696,6 +696,171 @@ func generateTasksHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func getTasksHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/tasks")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if project exists
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for tasks", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	tasks, err := getTasksByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get tasks", err, slog.String("project_id", projectID))
+		return
+	}
+
+	if tasks == nil {
+		tasks = []Task{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tasks)
+}
+
+func getTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := r.URL.Path[len("/tasks/"):]
+	if taskID == "" {
+		http.Error(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	task, err := getTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	if task == nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
+func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := r.URL.Path[len("/tasks/"):]
+	if taskID == "" {
+		http.Error(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if task exists
+	existingTask, err := getTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get task for update", err, slog.String("task_id", taskID))
+		return
+	}
+	if existingTask == nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	var updatedTask Task
+	if err := json.NewDecoder(r.Body).Decode(&updatedTask); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	updatedTask.ID = taskID // Ensure the ID from the URL is used
+
+	if err := updateTask(&updatedTask); err != nil {
+		http.Error(w, "Failed to update task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to update task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	// Return the updated task
+	task, err := getTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get updated task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get updated task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
+func serveImageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract project ID and image path from URL
+	// URL format: /projects/{projectId}/images/{imagePath}
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/projects/"), "/")
+	if len(pathParts) < 3 || pathParts[1] != "images" {
+		http.Error(w, "Invalid image path", http.StatusBadRequest)
+		return
+	}
+
+	projectID := pathParts[0]
+	imagePath := strings.Join(pathParts[2:], "/")
+
+	// Construct file path
+	filePath := filepath.Join("data", "projects", projectID, "images", imagePath)
+
+	// Security check: ensure the path is within the project directory
+	absProjectDir, err := filepath.Abs(filepath.Join("data", "projects", projectID))
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	absFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if !strings.HasPrefix(absFilePath, absProjectDir) {
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		http.Error(w, "Image not found", http.StatusNotFound)
+		return
+	}
+
+	// Serve the file
+	http.ServeFile(w, r, filePath)
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins for now
@@ -742,6 +907,14 @@ func main() {
 			generateTasksHandler(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodGet {
+			getTasksHandler(w, r)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/images/") && r.Method == http.MethodGet {
+			serveImageHandler(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getProjectHandler(w, r)
@@ -756,6 +929,16 @@ func main() {
 	mux.HandleFunc("/upload", uploadHandler)
 	mux.HandleFunc("/progress", progressHandler)
 	mux.HandleFunc("/images", getImagesHandler)
+	mux.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getTaskHandler(w, r)
+		case http.MethodPut:
+			updateTaskHandler(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	logger.Info("Server starting", "port", 8080)
 	if err := http.ListenAndServe(":8080", loggingMiddleware(corsMiddleware(mux))); err != nil {

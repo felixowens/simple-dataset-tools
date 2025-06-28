@@ -42,7 +42,7 @@ export const uploadFiles = (projectId: string, files: FileList) => {
   Array.from(files).forEach(file => {
     formData.append('files', file);
   });
-  
+
   return api.post(`/upload?projectId=${projectId}`, formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
@@ -60,10 +60,10 @@ export interface Task {
   id: string;
   projectId: string;
   imageAId: string;
-  imageBId: string;
-  prompt: string;
+  imageBId: { String: string; Valid: boolean } | null;
+  prompt: { String: string; Valid: boolean } | null;
   skipped: boolean;
-  candidateBIds: string[];
+  candidateBIds: string[] | null;
 }
 
 export interface TaskGenerationRequest {
@@ -76,5 +76,9 @@ export interface TaskGenerationResponse {
   averageCandidates: number;
 }
 
-export const generateTasks = (projectId: string, request?: TaskGenerationRequest) => 
+export const generateTasks = (projectId: string, request?: TaskGenerationRequest) =>
   api.post<TaskGenerationResponse>(`/projects/${projectId}/generate-tasks`, request || {});
+
+export const getTasks = (projectId: string) => api.get<Task[]>(`/projects/${projectId}/tasks`);
+export const getTask = (taskId: string) => api.get<Task>(`/tasks/${taskId}`);
+export const updateTask = (taskId: string, task: Partial<Task>) => api.put<Task>(`/tasks/${taskId}`, task);

@@ -376,6 +376,41 @@ func taskExistsForImageA(projectID, imageAID string) (bool, error) {
 	return count > 0, nil
 }
 
+func getTask(id string) (*Task, error) {
+	var task Task
+	err := db.QueryRow(`
+		SELECT id, project_id, image_a_id, image_b_id, prompt, skipped 
+		FROM tasks 
+		WHERE id = ?
+	`, id).Scan(&task.ID, &task.ProjectID, &task.ImageAID, &task.ImageBId, &task.Prompt, &task.Skipped)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Get candidate B IDs
+	rows, err := db.Query("SELECT image_id FROM task_candidates WHERE task_id = ?", task.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var candidateIDs []string
+	for rows.Next() {
+		var candidateID string
+		if err := rows.Scan(&candidateID); err != nil {
+			return nil, err
+		}
+		candidateIDs = append(candidateIDs, candidateID)
+	}
+
+	task.CandidateBIds = candidateIDs
+	return &task, nil
+}
+
 func closeDatabase() error {
 	if db != nil {
 		return db.Close()
