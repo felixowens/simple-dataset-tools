@@ -40,11 +40,11 @@ A lightweight, single‑developer tool that lets you import a folder of images, 
 | **P1** | *Project skeleton*  | ① `pnpm create vite` → starter React app with Typescript. ② FastAPI stub with `/ping`. ③ CORS + Axios handshake.                                                                |
 | **P2** | *Data model*        | ① Define SQLModel entities `Project`, `Image`, `Task`. ② CRUD endpoints. ③ React form to create / open project.                                                 |
 | **P3** | *Ingest & Hash*     | ① Drag‑and‑drop `<input type="file" multiple>` → POST `/upload`. ② Backend saves into `projects/<id>/images/`. ③ Async pHash compute; SSE progress bar.         |
-| **P4** | *Task generator*    | ① For each image, fetch N most‑similar (self‑join on Hamming ≤ h). ② Insert `Task` rows with candidate B list.                                                  |
+| **P4** | *Task generator*    | ① For each image, fetch N most‑similar (self‑join on Hamming ≤ h). ② Insert `Task` rows with candidate B list. If there were no similar images then still add the task but we'll allow the user to select from the image pool in the UI.                                                  |
 | **P5** | *Annotation UI*     | ① Wizard page shows A image + candidate B thumbnails. ② Keyboard shortcuts `1‑9` to pick, `s` skip, `d` delete. ③ Prompt textarea autofocused; PUT `/task/:id`. |
 | **P6** | *Progress & Resume* | ① Dashboard counts (total / done / skipped). ② Resume button jumps to first unfinished. ③ Option to re‑queue skipped.                                           |
 | **P7** | *Export*            | ① `/export/jsonl` streams file. ② `/export/csv` alternative schema. ③ Download triggers in browser.                                                             |
-| **P8** | *Polish*            | ① Dark‑mode toggle. ② Lightbox zoom on images. ③ Drag‑reorder candidate list.                                                                                   |
+| **P8** | *Polish*            | ① Make the UI look pretty, clean, elegant etc. Like the sort of product Apple would release.                                                                                   |
 
 ---
 
@@ -92,3 +92,11 @@ flowchart TD
 a,b,prompt
 images/0001.jpg,images/0001_edit.jpg,"turn sky pink"
 ```
+
+## Style
+
+- Keep it simple
+- YAGNI
+- Prefer storing application state in the URL where possible.
+- Build on standards (e.g Web APIs like `new URL`, `intl` are a good start).
+- Make impossible states unrepresentable, e.g use discriminated union state object rather than multiple states for managing request lifecycle.
