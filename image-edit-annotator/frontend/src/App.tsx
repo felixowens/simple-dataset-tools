@@ -657,7 +657,7 @@ function ProjectPage() {
                 <p className="text-sm">Upload some images to get started.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 max-h-[100vh] overflow-y-auto">
                 {images.map((image) => (
                   <div key={image.id} className="bg-gray-700 rounded-lg p-3">
                     <div className="aspect-square bg-gray-600 rounded mb-2 flex items-center justify-center">
