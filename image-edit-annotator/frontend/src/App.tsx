@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, Link } from 'react-router-dom'
-import { listProjects, ping } from './api'
+import { listProjects, ping, updateProject } from './api'
 
 function App() {
   const [apiStatus, setApiStatus] = useState<string>('checking...')
@@ -269,7 +269,7 @@ function ProjectForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      const response = await createProject({ name, version })
+      const response = await createProject({ name, version, promptButtons: [] })
       navigate(`/projects/${response.data.id}`)
     } catch (error) {
       console.error('Error creating project:', error)
@@ -348,6 +348,8 @@ function ProjectPage() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
   const [taskGeneration, setTaskGeneration] = useState<{ loading: boolean; result?: TaskGenerationResponse }>({ loading: false })
+  const [newPromptButton, setNewPromptButton] = useState('')
+  const [promptButtonsExpanded, setPromptButtonsExpanded] = useState(false)
 
   const fetchImages = async () => {
     if (!projectId) return
@@ -440,6 +442,53 @@ function ProjectPage() {
     }
   }
 
+  const handleAddPromptButton = async () => {
+    if (!newPromptButton.trim() || pageState.status !== 'success') return
+
+    const updatedPromptButtons = [...(pageState.project.promptButtons || []), newPromptButton.trim()]
+
+    try {
+      await updateProject(projectId!, {
+        name: pageState.project.name,
+        version: pageState.project.version,
+        promptButtons: updatedPromptButtons
+      })
+
+      // Update local state
+      setPageState({
+        status: 'success',
+        project: { ...pageState.project, promptButtons: updatedPromptButtons }
+      })
+      setNewPromptButton('')
+    } catch (err) {
+      console.error('Error adding prompt button:', err)
+      alert('Failed to add prompt button')
+    }
+  }
+
+  const handleRemovePromptButton = async (index: number) => {
+    if (pageState.status !== 'success') return
+
+    const updatedPromptButtons = pageState.project.promptButtons?.filter((_, i) => i !== index) || []
+
+    try {
+      await updateProject(projectId!, {
+        name: pageState.project.name,
+        version: pageState.project.version,
+        promptButtons: updatedPromptButtons
+      })
+
+      // Update local state
+      setPageState({
+        status: 'success',
+        project: { ...pageState.project, promptButtons: updatedPromptButtons }
+      })
+    } catch (err) {
+      console.error('Error removing prompt button:', err)
+      alert('Failed to remove prompt button')
+    }
+  }
+
   switch (pageState.status) {
     case 'loading':
       return (
@@ -510,6 +559,76 @@ function ProjectPage() {
                 Back to Home
               </Link>
             </div>
+          </div>
+
+          {/* Prompt Buttons Configuration */}
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Quick Prompts Configuration</h3>
+              <button
+                onClick={() => setPromptButtonsExpanded(!promptButtonsExpanded)}
+                className="flex items-center px-3 py-1 text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                {promptButtonsExpanded ? 'Collapse' : 'Expand'}
+                <svg className={`w-4 h-4 ml-1 transform transition-transform ${promptButtonsExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
+
+            {promptButtonsExpanded && (
+              <div className="bg-gray-700 rounded-lg p-4 space-y-4">
+                <p className="text-gray-300 text-sm">
+                  Configure quick prompt buttons that will appear in the annotation interface to speed up common descriptions.
+                </p>
+
+                {/* Add new prompt button */}
+                <div className="flex space-x-2">
+                  <input
+                    type="text"
+                    value={newPromptButton}
+                    onChange={(e) => setNewPromptButton(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleAddPromptButton()}
+                    placeholder="Enter a quick prompt (e.g., 'Added a person to the scene')"
+                    className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <button
+                    onClick={handleAddPromptButton}
+                    disabled={!newPromptButton.trim()}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Add
+                  </button>
+                </div>
+
+                {/* Current prompt buttons */}
+                {project.promptButtons && project.promptButtons.length > 0 ? (
+                  <div className="space-y-2">
+                    <h4 className="text-white text-sm font-medium">Current Quick Prompts:</h4>
+                    <div className="space-y-2">
+                      {project.promptButtons.map((button, index) => (
+                        <div key={index} className="flex items-center justify-between bg-gray-800 rounded p-3">
+                          <span className="text-white">{button}</span>
+                          <button
+                            onClick={() => handleRemovePromptButton(index)}
+                            className="text-red-400 hover:text-red-300 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-4 text-gray-400">
+                    <p>No quick prompts configured yet.</p>
+                    <p className="text-sm">Add some common descriptions to speed up annotation.</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div>

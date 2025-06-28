@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getTasks, getImages, updateTask, type Task, type Image } from '../api'
+import { getTasks, getImages, updateTask, getProject, type Task, type Image, type Project } from '../api'
 import { TaskStatistics } from './TaskStatistics'
 
 interface AnnotationWizardProps {
@@ -11,6 +11,7 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
   const navigate = useNavigate()
   const [tasks, setTasks] = useState<Task[]>([])
   const [images, setImages] = useState<Image[]>([])
+  const [project, setProject] = useState<Project | null>(null)
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -34,12 +35,14 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [tasksResponse, imagesResponse] = await Promise.all([
+      const [tasksResponse, imagesResponse, projectResponse] = await Promise.all([
         getTasks(projectId),
-        getImages(projectId)
+        getImages(projectId),
+        getProject(projectId)
       ])
       setTasks(tasksResponse.data)
       setImages(imagesResponse.data)
+      setProject(projectResponse.data)
 
       // Find first incomplete task (resume functionality)
       const firstIncomplete = tasksResponse.data.findIndex(t =>
@@ -435,6 +438,25 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
           {/* Prompt Input */}
           <div className="bg-gray-700 rounded-lg p-4">
             <h3 className="text-lg font-semibold text-white mb-4">Edit Description</h3>
+            
+            {/* Prompt Buttons */}
+            {project?.promptButtons && project.promptButtons.length > 0 && (
+              <div className="mb-4">
+                <p className="text-sm text-gray-300 mb-2">Quick prompts:</p>
+                <div className="flex flex-wrap gap-2">
+                  {project.promptButtons.map((button, index) => (
+                    <button
+                      key={index}
+                      onClick={() => setPrompt(button)}
+                      className="px-3 py-1 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                    >
+                      {button}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}

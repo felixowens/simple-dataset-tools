@@ -13,6 +13,7 @@ export interface Project {
   id: string;
   name: string;
   version: string;
+  promptButtons: string[];
 }
 
 export interface ProjectWithStats {
