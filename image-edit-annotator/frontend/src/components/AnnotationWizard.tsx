@@ -69,6 +69,86 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
     return `http://localhost:8080/projects/${projectId}/${imagePath}`
   }
 
+  // Calculate Hamming distance between two pHash strings
+  // goimagehash format is typically "p:" followed by 16 hex characters for 64-bit hash
+  const calculatePHashDistance = (hash1: string, hash2: string): number => {
+    if (!hash1 || !hash2) {
+      return Number.MAX_SAFE_INTEGER
+    }
+
+    try {
+      // Parse goimagehash format: "p:xxxxxxxxxxxx"
+      let cleanHash1 = hash1
+      let cleanHash2 = hash2
+
+      // Extract hex part after "p:" prefix
+      if (hash1.startsWith('p:')) {
+        cleanHash1 = hash1.substring(2)
+      }
+      if (hash2.startsWith('p:')) {
+        cleanHash2 = hash2.substring(2)
+      }
+
+      // Validate hex strings
+      if (!cleanHash1 || !cleanHash2 || cleanHash1.length !== cleanHash2.length) {
+        return Number.MAX_SAFE_INTEGER
+      }
+
+      // Ensure they are valid hex
+      if (!/^[0-9a-fA-F]+$/.test(cleanHash1) || !/^[0-9a-fA-F]+$/.test(cleanHash2)) {
+        return Number.MAX_SAFE_INTEGER
+      }
+
+      // For very long hashes, process in chunks to avoid BigInt overflow
+      let distance = 0
+      const chunkSize = 15 // Process 15 hex chars at a time (60 bits, safe for BigInt)
+      
+      for (let i = 0; i < cleanHash1.length; i += chunkSize) {
+        const chunk1 = cleanHash1.substring(i, i + chunkSize)
+        const chunk2 = cleanHash2.substring(i, i + chunkSize)
+        
+        if (chunk1.length !== chunk2.length) break
+        
+        const bigint1 = BigInt('0x' + chunk1)
+        const bigint2 = BigInt('0x' + chunk2)
+        
+        // XOR to get differing bits
+        let xor = bigint1 ^ bigint2
+        
+        // Count set bits in this chunk
+        while (xor > 0n) {
+          distance++
+          xor = xor & (xor - 1n) // Remove lowest set bit
+        }
+      }
+      
+      return distance
+    } catch (error) {
+      // Fallback: simple character comparison for debugging
+      let distance = 0
+      const minLength = Math.min(hash1.length, hash2.length)
+      for (let i = 0; i < minLength; i++) {
+        if (hash1[i] !== hash2[i]) {
+          distance++
+        }
+      }
+      return distance + Math.abs(hash1.length - hash2.length)
+    }
+  }
+
+  // Sort images by pHash similarity to a reference image
+  const sortImagesByPHashSimilarity = (referenceImage: Image, images: Image[]): Image[] => {
+    if (!referenceImage || !referenceImage.pHash) {
+      return images // Return unsorted if no reference hash
+    }
+
+    return [...images].sort((a, b) => {
+      const distanceA = calculatePHashDistance(referenceImage.pHash, a.pHash)
+      const distanceB = calculatePHashDistance(referenceImage.pHash, b.pHash)
+      return distanceA - distanceB // Ascending order (most similar first)
+    })
+  }
+
   const handleSave = async () => {
     if (!currentTask || (!selectedImageBId && !prompt.trim())) return
 
@@ -372,7 +452,12 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
             {/* Candidate Images Selection */}
             <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700 @3xl:col-span-2">
               <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-                {candidateImages.length > 0 ? 'Candidate Images' : 'All Project Images'}
+                {candidateImages.length > 0 ? 'Candidate Images' : 'All Project Images'} 
+                {candidateImages.length === 0 && imageA && (
+                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">
+                    (sorted by similarity)
+                  </span>
+                )}
               </h3>
 
               {candidateImages.length > 0 ? (
@@ -402,7 +487,10 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
                 </div>
               ) : (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {images.filter(img => img.id !== currentTask.imageAId).map((image) => (
+                  {sortImagesByPHashSimilarity(
+                    imageA!, 
+                    images.filter(img => img.id !== currentTask.imageAId)
+                  ).map((image) => (
                     <div
                       key={image.id}
                       className={`cursor-pointer border-2 rounded-lg p-2 transition-all ${selectedImageBId === image.id
@@ -419,7 +507,14 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
                         />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-white truncate">{image.path.split('/').pop()}</p>
-                          <p className="text-xs text-gray-400 font-mono">{image.pHash.substring(0, 12)}...</p>
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs text-gray-400 font-mono">{image.pHash.substring(0, 12)}...</p>
+                            {imageA && (
+                              <p className="text-xs text-gray-500">
+                                similarity: {Math.max(0, 64 - calculatePHashDistance(imageA.pHash, image.pHash))}/64
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
