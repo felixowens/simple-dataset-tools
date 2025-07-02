@@ -1,4 +1,4 @@
-# Image Edit Dataset Annotator – Phased POC Plan
+# Image Edit Dataset Annotator – Phased POC Plan (Complete)
 
 A lightweight, single‑developer tool that lets you import a folder of images, rapidly pair them (A → B), write an edit prompt, track progress, and export the result in a machine‑readable format.  Everything runs **locally** with no external services.
 
@@ -13,7 +13,7 @@ A lightweight, single‑developer tool that lets you import a folder of images, 
 | 3 | Export → **JSONL** (default) and **CSV**                    | One row per completed task.                           |
 | 4 | Similarity = perceptual hash (**pHash**) + Hamming distance | Good‑enough recall for suggesting candidate B images. |
 | 5 | State management = **React Context + URL params**           | No external store like Zustand/Redux.                 |
-| 6 | No Docker                                                   | `python -m venv` and `npm install` are enough.        |
+| 6 | No Docker                                                   | `go` and `pnpm install` are enough.        |
 
 ---
 
