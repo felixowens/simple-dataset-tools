@@ -14,16 +14,19 @@ export interface Project {
   name: string;
   version: string;
   promptButtons: string[];
+  parentProjectId?: string | null;
 }
 
 export interface ProjectWithStats {
   id: string;
   name: string;
   version: string;
+  promptButtons: string[];
   imageCount: number;
   taskCount: number;
   completedTaskCount: number;
   createdAt?: string;
+  parentProjectId?: string | null;
 }
 
 export const createProject = (project: Omit<Project, 'id'>) => api.post<Project>('/projects', project);
@@ -95,3 +98,11 @@ export const generateTasks = (projectId: string, request?: TaskGenerationRequest
 export const getTasks = (projectId: string) => api.get<Task[]>(`/projects/${projectId}/tasks`);
 export const getTask = (taskId: string) => api.get<Task>(`/tasks/${taskId}`);
 export const updateTask = (taskId: string, task: Partial<Task>) => api.put<Task>(`/tasks/${taskId}`, task);
+
+export interface ForkProjectRequest {
+  name: string;
+  version: string;
+}
+
+export const forkProject = (sourceProjectId: string, forkData: ForkProjectRequest) => 
+  api.post<Project>(`/projects/${sourceProjectId}/fork`, forkData);

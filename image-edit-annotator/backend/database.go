@@ -74,6 +74,7 @@ func runMigrations() error {
 		{1, createInitialTables},
 		{2, addPromptButtonsToProjects},
 		{3, addImagePathConstraint},
+		{4, addParentProjectIdToProjects},
 	}
 
 	for _, m := range migrations {
@@ -163,6 +164,11 @@ func addImagePathConstraint() error {
 	return err
 }
 
+func addParentProjectIdToProjects() error {
+	_, err := db.Exec(`ALTER TABLE projects ADD COLUMN parent_project_id TEXT REFERENCES projects(id)`)
+	return err
+}
+
 // Project database operations
 func createProject(project *Project) error {
 	promptButtonsJSON, err := json.Marshal(project.PromptButtons)
@@ -170,8 +176,8 @@ func createProject(project *Project) error {
 		return fmt.Errorf("failed to marshal prompt buttons: %v", err)
 	}
 	_, err = db.Exec(
-		"INSERT INTO projects (id, name, version, prompt_buttons) VALUES (?, ?, ?, ?)",
-		project.ID, project.Name, project.Version, string(promptButtonsJSON),
+		"INSERT INTO projects (id, name, version, prompt_buttons, parent_project_id) VALUES (?, ?, ?, ?, ?)",
+		project.ID, project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID,
 	)
 	return err
 }
@@ -180,8 +186,8 @@ func getProject(id string) (*Project, error) {
 	var project Project
 	var promptButtonsJSON string
 	err := db.QueryRow(
-		"SELECT id, name, version, COALESCE(prompt_buttons, '[]') FROM projects WHERE id = ?", id,
-	).Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON)
+		"SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id FROM projects WHERE id = ?", id,
+	).Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -198,7 +204,7 @@ func getProject(id string) (*Project, error) {
 }
 
 func listProjects() ([]Project, error) {
-	rows, err := db.Query("SELECT id, name, version, COALESCE(prompt_buttons, '[]') FROM projects ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id FROM projects ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +214,7 @@ func listProjects() ([]Project, error) {
 	for rows.Next() {
 		var project Project
 		var promptButtonsJSON string
-		if err := rows.Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON); err != nil {
+		if err := rows.Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID); err != nil {
 			return nil, err
 		}
 		
@@ -228,8 +234,8 @@ func updateProject(project *Project) error {
 		return fmt.Errorf("failed to marshal prompt buttons: %v", err)
 	}
 	_, err = db.Exec(
-		"UPDATE projects SET name = ?, version = ?, prompt_buttons = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		project.Name, project.Version, string(promptButtonsJSON), project.ID,
+		"UPDATE projects SET name = ?, version = ?, prompt_buttons = ?, parent_project_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ID,
 	)
 	return err
 }

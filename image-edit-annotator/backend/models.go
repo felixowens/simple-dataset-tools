@@ -6,12 +6,13 @@ import (
 )
 
 type Project struct {
-	ID            string    `json:"id" db:"id"`
-	Name          string    `json:"name" db:"name"`
-	Version       string    `json:"version" db:"version"`
-	PromptButtons []string  `json:"promptButtons" db:"prompt_buttons"`
-	CreatedAt     time.Time `json:"createdAt" db:"created_at"`
-	UpdatedAt     time.Time `json:"updatedAt" db:"updated_at"`
+	ID              string    `json:"id" db:"id"`
+	Name            string    `json:"name" db:"name"`
+	Version         string    `json:"version" db:"version"`
+	PromptButtons   []string  `json:"promptButtons" db:"prompt_buttons"`
+	ParentProjectID *string   `json:"parentProjectId" db:"parent_project_id"`
+	CreatedAt       time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt       time.Time `json:"updatedAt" db:"updated_at"`
 }
 
 type Image struct {

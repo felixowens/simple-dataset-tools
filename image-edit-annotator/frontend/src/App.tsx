@@ -60,15 +60,19 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type ForkProjectRequest } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
 import { TaskStatistics } from './components/TaskStatistics'
+import { ForkProjectModal } from './components/ForkProjectModal'
 
 function Home() {
   const [projects, setProjects] = useState<ProjectWithStats[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showForkModal, setShowForkModal] = useState(false)
+  const [projectToFork, setProjectToFork] = useState<ProjectWithStats | null>(null)
+  const [isForkLoading, setIsForkLoading] = useState(false)
 
   useEffect(() => {
     const fetchProjects = async () => {
@@ -122,6 +126,37 @@ function Home() {
 
     fetchProjects()
   }, [])
+
+  const handleForkProject = (e: React.MouseEvent, project: ProjectWithStats) => {
+    e.preventDefault() // Prevent navigation to project page
+    setProjectToFork(project)
+    setShowForkModal(true)
+  }
+
+  const handleForkSubmit = async (forkData: ForkProjectRequest) => {
+    if (!projectToFork) return
+
+    try {
+      setIsForkLoading(true)
+      await forkProject(projectToFork.id, forkData)
+      setShowForkModal(false)
+      setProjectToFork(null)
+      // Refresh projects list to show the new forked project
+      window.location.reload()
+    } catch (error) {
+      console.error('Error forking project:', error)
+      alert('Failed to fork project. Please try again.')
+    } finally {
+      setIsForkLoading(false)
+    }
+  }
+
+  const handleCloseForkModal = () => {
+    if (!isForkLoading) {
+      setShowForkModal(false)
+      setProjectToFork(null)
+    }
+  }
 
   if (loading) {
     return (
@@ -191,71 +226,101 @@ function Home() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {projects.map((project) => (
-            <Link
+            <div
               key={project.id}
-              to={`/projects/${project.id}`}
-              className="group bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 hover:border-blue-300 dark:hover:border-blue-600 transition-colors duration-200"
+              className="group bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6 hover:border-blue-300 dark:hover:border-blue-600 transition-colors duration-200 relative"
             >
-              <div className="flex items-start justify-between mb-4">
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                    {project.name}
-                  </h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    v{project.version}
-                  </p>
-                </div>
-                <div className="ml-4 flex-shrink-0">
-                  <div className="w-3 h-3 bg-green-500 rounded-full opacity-75 group-hover:opacity-100 transition-opacity" />
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Images</span>
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">
-                    {project.imageCount}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Tasks</span>
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">
-                    {project.taskCount}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Completed</span>
-                  <span className="text-sm font-medium text-green-600 dark:text-green-400">
-                    {project.completedTaskCount} / {project.taskCount}
-                  </span>
-                </div>
-                {project.taskCount > 0 && (
-                  <div className="mt-3">
-                    <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
-                      <span>Progress</span>
-                      <span>{Math.round((project.completedTaskCount / project.taskCount) * 100)}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                      <div
-                        className="bg-green-500 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${(project.completedTaskCount / project.taskCount) * 100}%` }}
-                      />
-                    </div>
+              <Link to={`/projects/${project.id}`} className="block">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-lg font-medium text-gray-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                      {project.name}
+                    </h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      v{project.version}
+                      {project.parentProjectId && (
+                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
+                          Fork
+                        </span>
+                      )}
+                    </p>
                   </div>
-                )}
-              </div>
-
-              <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-                <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
-                  <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  {project.id.substring(0, 8)}...
+                  <div className="ml-4 flex-shrink-0">
+                    <div className="w-3 h-3 bg-green-500 rounded-full opacity-75 group-hover:opacity-100 transition-opacity" />
+                  </div>
                 </div>
-              </div>
-            </Link>
+              </Link>
+              
+              {/* Fork button */}
+              <button
+                onClick={(e) => handleForkProject(e, project)}
+                className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-2 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
+                title="Fork project"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+                </svg>
+              </button>
+
+              <Link to={`/projects/${project.id}`}>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Images</span>
+                    <span className="text-sm font-medium text-gray-900 dark:text-white">
+                      {project.imageCount}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Tasks</span>
+                    <span className="text-sm font-medium text-gray-900 dark:text-white">
+                      {project.taskCount}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Completed</span>
+                    <span className="text-sm font-medium text-green-600 dark:text-green-400">
+                      {project.completedTaskCount} / {project.taskCount}
+                    </span>
+                  </div>
+                  {project.taskCount > 0 && (
+                    <div className="mt-3">
+                      <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                        <span>Progress</span>
+                        <span>{Math.round((project.completedTaskCount / project.taskCount) * 100)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                        <div
+                          className="bg-green-500 h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${(project.completedTaskCount / project.taskCount) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                  <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    {project.id.substring(0, 8)}...
+                  </div>
+                </div>
+              </Link>
+            </div>
           ))}
         </div>
+      )}
+      
+      {/* Fork Project Modal */}
+      {projectToFork && (
+        <ForkProjectModal
+          sourceProject={projectToFork}
+          isOpen={showForkModal}
+          onClose={handleCloseForkModal}
+          onFork={handleForkSubmit}
+          isLoading={isForkLoading}
+        />
       )}
     </div>
   )

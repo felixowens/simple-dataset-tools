@@ -1289,6 +1289,199 @@ func createZipArchive(sourceDir, zipPath string) error {
 	})
 }
 
+type ForkProjectRequest struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func forkProjectHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/fork")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if source project exists
+	sourceProject, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get source project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get source project for fork", err, slog.String("project_id", projectID))
+		return
+	}
+	if sourceProject == nil {
+		http.Error(w, "Source project not found", http.StatusNotFound)
+		return
+	}
+
+	// Parse fork request
+	var req ForkProjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate fork request
+	if req.Name == "" {
+		http.Error(w, "Project name is required", http.StatusBadRequest)
+		return
+	}
+	if req.Version == "" {
+		req.Version = "1.0"
+	}
+
+	// Create forked project
+	forkedProject := Project{
+		ID:              uuid.New().String(),
+		Name:            req.Name,
+		Version:         req.Version,
+		PromptButtons:   sourceProject.PromptButtons,
+		ParentProjectID: &sourceProject.ID,
+	}
+
+	if err := createProject(&forkedProject); err != nil {
+		http.Error(w, "Failed to create forked project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create forked project", err, slog.String("source_project_id", projectID))
+		return
+	}
+
+	// Get source images
+	sourceImages, err := getImagesByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get source images", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get source images for fork", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Create forked project directory
+	forkedImageDir := filepath.Join("data", "projects", forkedProject.ID, "images")
+	if err := os.MkdirAll(forkedImageDir, 0755); err != nil {
+		http.Error(w, "Failed to create forked project directory", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create forked project directory", err)
+		return
+	}
+
+	// Copy images and create new image records
+	var forkedImages []Image
+	for _, sourceImage := range sourceImages {
+		// Copy image file
+		sourceImagePath := filepath.Join("data", "projects", projectID, sourceImage.Path)
+		forkedImagePath := filepath.Join("data", "projects", forkedProject.ID, sourceImage.Path)
+		if err := copyFile(sourceImagePath, forkedImagePath); err != nil {
+			logError(r.Context(), "Failed to copy image file", err,
+				slog.String("source", sourceImagePath),
+				slog.String("dest", forkedImagePath))
+			continue
+		}
+
+		// Create new image record
+		forkedImage := Image{
+			ID:        uuid.New().String(),
+			ProjectID: forkedProject.ID,
+			Path:      sourceImage.Path,
+			PHash:     sourceImage.PHash,
+		}
+		forkedImages = append(forkedImages, forkedImage)
+	}
+
+	// Store forked images in database
+	if len(forkedImages) > 0 {
+		if err := createImages(forkedImages); err != nil {
+			http.Error(w, "Failed to store forked images", http.StatusInternalServerError)
+			logError(r.Context(), "Failed to store forked images", err, slog.String("forked_project_id", forkedProject.ID))
+			return
+		}
+	}
+
+	// Get source tasks and copy them to forked project
+	sourceTasks, err := getTasksByProjectID(projectID)
+	if err != nil {
+		logError(r.Context(), "Failed to get source tasks for fork", err, slog.String("project_id", projectID))
+		// Don't fail the fork if tasks can't be copied, just log the error
+	} else if len(sourceTasks) > 0 {
+		// Create mapping from source image IDs to forked image IDs
+		imageIDMap := make(map[string]string)
+		for i, sourceImage := range sourceImages {
+			if i < len(forkedImages) {
+				imageIDMap[sourceImage.ID] = forkedImages[i].ID
+			}
+		}
+
+		// Copy tasks with updated image IDs
+		var forkedTasks []Task
+		for _, sourceTask := range sourceTasks {
+			// Map source image IDs to forked image IDs
+			forkedImageAID, hasImageA := imageIDMap[sourceTask.ImageAID]
+			if !hasImageA {
+				continue // Skip task if image A doesn't exist in fork
+			}
+
+			forkedTask := Task{
+				ID:        uuid.New().String(),
+				ProjectID: forkedProject.ID,
+				ImageAID:  forkedImageAID,
+				ImageBId:  sourceTask.ImageBId,
+				Prompt:    sourceTask.Prompt,
+				Skipped:   sourceTask.Skipped,
+			}
+
+			// Update ImageBId if it exists and is mapped
+			if sourceTask.ImageBId.Valid {
+				if forkedImageBID, hasImageB := imageIDMap[sourceTask.ImageBId.String]; hasImageB {
+					forkedTask.ImageBId = sql.NullString{String: forkedImageBID, Valid: true}
+				} else {
+					// If image B doesn't exist in fork, clear the selection but keep the prompt
+					forkedTask.ImageBId = sql.NullString{Valid: false}
+				}
+			}
+
+			// Map candidate B IDs
+			var forkedCandidateIDs []string
+			for _, candidateID := range sourceTask.CandidateBIds {
+				if forkedCandidateID, hasCandidate := imageIDMap[candidateID]; hasCandidate {
+					forkedCandidateIDs = append(forkedCandidateIDs, forkedCandidateID)
+				}
+			}
+			forkedTask.CandidateBIds = forkedCandidateIDs
+
+			forkedTasks = append(forkedTasks, forkedTask)
+		}
+
+		// Store forked tasks
+		if len(forkedTasks) > 0 {
+			for _, task := range forkedTasks {
+				if err := createTask(&task); err != nil {
+					logError(r.Context(), "Failed to create forked task", err,
+						slog.String("task_id", task.ID),
+						slog.String("forked_project_id", forkedProject.ID))
+					// Continue with other tasks even if one fails
+				}
+			}
+		}
+
+		logInfo(r.Context(), "Project forked successfully",
+			slog.String("source_project_id", projectID),
+			slog.String("forked_project_id", forkedProject.ID),
+			slog.String("forked_project_name", forkedProject.Name),
+			slog.Int("images_copied", len(forkedImages)),
+			slog.Int("tasks_copied", len(forkedTasks)))
+	} else {
+		logInfo(r.Context(), "Project forked successfully",
+			slog.String("source_project_id", projectID),
+			slog.String("forked_project_id", forkedProject.ID),
+			slog.String("forked_project_name", forkedProject.Name),
+			slog.Int("images_copied", len(forkedImages)),
+			slog.Int("tasks_copied", 0))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(forkedProject)
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins for now
@@ -1337,6 +1530,10 @@ func main() {
 		}
 		if strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodGet {
 			getTasksHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/fork") && r.Method == http.MethodPost {
+			forkProjectHandler(w, r)
 			return
 		}
 		if strings.Contains(r.URL.Path, "/images/") {
