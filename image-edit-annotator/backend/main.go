@@ -258,6 +258,37 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 			Status:    "processing",
 		})
 
+		// Check if file already exists by path
+		imagePath := filepath.Join("images", fileHeader.Filename)
+		exists, err := imageExistsByPath(projectID, imagePath)
+		if err != nil {
+			sendProgressUpdate(projectID, ProgressUpdate{
+				ProjectID:    projectID,
+				Filename:     fileHeader.Filename,
+				Progress:     i + 1,
+				Total:        total,
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("Error checking existing file: %v", err),
+			})
+			continue
+		}
+
+		if exists {
+			logger.Info("Skipping duplicate file",
+				"project_id", projectID,
+				"filename", fileHeader.Filename,
+			)
+			sendProgressUpdate(projectID, ProgressUpdate{
+				ProjectID:    projectID,
+				Filename:     fileHeader.Filename,
+				Progress:     i + 1,
+				Total:        total,
+				Status:       "skipped",
+				ErrorMessage: "File already exists",
+			})
+			continue
+		}
+
 		// Open uploaded file
 		file, err := fileHeader.Open()
 		if err != nil {
@@ -307,6 +338,44 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 			continue
 		}
 
+		// Compute pHash
+		hash, err := goimagehash.PerceptionHash(img)
+		if err != nil {
+			sendProgressUpdate(projectID, ProgressUpdate{
+				ProjectID:    projectID,
+				Filename:     fileHeader.Filename,
+				Progress:     i + 1,
+				Total:        total,
+				Status:       "error",
+				ErrorMessage: fmt.Sprintf("Error computing hash: %v", err),
+			})
+			continue
+		}
+
+		// Check if similar image exists by hash
+		hashExists, err := imageExistsByHash(projectID, hash.ToString(), 0)
+		if err != nil {
+			logger.Warn("Error checking hash duplicates",
+				"error", err,
+				"project_id", projectID,
+				"filename", fileHeader.Filename,
+			)
+		} else if hashExists {
+			logger.Info("Skipping duplicate image by hash",
+				"project_id", projectID,
+				"filename", fileHeader.Filename,
+			)
+			sendProgressUpdate(projectID, ProgressUpdate{
+				ProjectID:    projectID,
+				Filename:     fileHeader.Filename,
+				Progress:     i + 1,
+				Total:        total,
+				Status:       "skipped",
+				ErrorMessage: "Similar image already exists",
+			})
+			continue
+		}
+
 		// Save file to disk
 		filename := fileHeader.Filename
 		filePath := filepath.Join(projectDir, filename)
@@ -337,25 +406,11 @@ func processUploadedFiles(projectID string, files []*multipart.FileHeader, proje
 			continue
 		}
 
-		// Compute pHash
-		hash, err := goimagehash.PerceptionHash(img)
-		if err != nil {
-			sendProgressUpdate(projectID, ProgressUpdate{
-				ProjectID:    projectID,
-				Filename:     fileHeader.Filename,
-				Progress:     i + 1,
-				Total:        total,
-				Status:       "error",
-				ErrorMessage: fmt.Sprintf("Error computing hash: %v", err),
-			})
-			continue
-		}
-
 		// Create image record
 		imageRecord := Image{
 			ID:        uuid.New().String(),
 			ProjectID: projectID,
-			Path:      filepath.Join("images", filename),
+			Path:      imagePath,
 			PHash:     hash.ToString(),
 		}
 
@@ -478,6 +533,76 @@ func getImagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(projectImages)
+}
+
+func deleteImageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract project ID and image ID from URL
+	// URL format: /projects/{projectId}/images/{imageId}
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/projects/"), "/")
+	if len(pathParts) < 3 || pathParts[1] != "images" {
+		http.Error(w, "Invalid image path", http.StatusBadRequest)
+		return
+	}
+
+	projectID := pathParts[0]
+	imageID := pathParts[2]
+
+	// Check if project exists
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for image deletion", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	// Get image details before deletion
+	image, err := getImage(imageID)
+	if err != nil {
+		http.Error(w, "Failed to get image", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get image for deletion", err, slog.String("image_id", imageID))
+		return
+	}
+	if image == nil {
+		http.Error(w, "Image not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify image belongs to the project
+	if image.ProjectID != projectID {
+		http.Error(w, "Image does not belong to this project", http.StatusBadRequest)
+		return
+	}
+
+	// Delete image file from disk
+	filePath := filepath.Join("data", "projects", projectID, image.Path)
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		logError(r.Context(), "Failed to delete image file", err, 
+			slog.String("file_path", filePath),
+			slog.String("image_id", imageID))
+	}
+
+	// Delete image from database (this will cascade delete related tasks)
+	if err := deleteImage(imageID); err != nil {
+		http.Error(w, "Failed to delete image", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to delete image from database", err, slog.String("image_id", imageID))
+		return
+	}
+
+	logInfo(r.Context(), "Image deleted successfully", 
+		slog.String("project_id", projectID),
+		slog.String("image_id", imageID),
+		slog.String("path", image.Path))
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type SimilarImage struct {
@@ -1214,9 +1339,14 @@ func main() {
 			getTasksHandler(w, r)
 			return
 		}
-		if strings.Contains(r.URL.Path, "/images/") && r.Method == http.MethodGet {
-			serveImageHandler(w, r)
-			return
+		if strings.Contains(r.URL.Path, "/images/") {
+			if r.Method == http.MethodGet {
+				serveImageHandler(w, r)
+				return
+			} else if r.Method == http.MethodDelete {
+				deleteImageHandler(w, r)
+				return
+			}
 		}
 		if strings.HasSuffix(r.URL.Path, "/export/jsonl") && r.Method == http.MethodGet {
 			exportJSONLHandler(w, r)

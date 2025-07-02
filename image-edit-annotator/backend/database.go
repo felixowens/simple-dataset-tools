@@ -73,6 +73,7 @@ func runMigrations() error {
 	migrations := []migration{
 		{1, createInitialTables},
 		{2, addPromptButtonsToProjects},
+		{3, addImagePathConstraint},
 	}
 
 	for _, m := range migrations {
@@ -154,6 +155,11 @@ func createInitialTables() error {
 
 func addPromptButtonsToProjects() error {
 	_, err := db.Exec(`ALTER TABLE projects ADD COLUMN prompt_buttons TEXT DEFAULT '[]'`)
+	return err
+}
+
+func addImagePathConstraint() error {
+	_, err := db.Exec(`CREATE UNIQUE INDEX idx_images_project_path ON images(project_id, path)`)
 	return err
 }
 
@@ -304,6 +310,48 @@ func getImage(id string) (*Image, error) {
 	}
 
 	return &image, nil
+}
+
+func imageExistsByPath(projectID, path string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM images WHERE project_id = ? AND path = ?",
+		projectID, path,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func imageExistsByHash(projectID, hash string, threshold int) (bool, error) {
+	rows, err := db.Query(
+		"SELECT phash FROM images WHERE project_id = ?",
+		projectID,
+	)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var existingHash string
+		if err := rows.Scan(&existingHash); err != nil {
+			continue
+		}
+
+		// Compare hashes (this is a simplified check - in production you'd use proper hash comparison)
+		if existingHash == hash {
+			return true, nil
+		}
+	}
+
+	return false, rows.Err()
+}
+
+func deleteImage(imageID string) error {
+	_, err := db.Exec("DELETE FROM images WHERE id = ?", imageID)
+	return err
 }
 
 // Task database operations

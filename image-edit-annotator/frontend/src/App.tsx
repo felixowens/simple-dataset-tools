@@ -60,7 +60,7 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, listProjectsWithStats, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
 import { TaskStatistics } from './components/TaskStatistics'
@@ -489,6 +489,25 @@ function ProjectPage() {
     }
   }
 
+  const handleDeleteImage = async (imageId: string, imageName: string) => {
+    if (!projectId) return
+
+    if (!confirm(`Are you sure you want to delete "${imageName}"? This action cannot be undone and will also remove any tasks associated with this image.`)) {
+      return
+    }
+
+    try {
+      await deleteImage(projectId, imageId)
+      // Refresh images and tasks after deletion
+      fetchImages()
+      fetchTasks()
+      alert(`Image "${imageName}" has been deleted successfully.`)
+    } catch (err) {
+      console.error('Error deleting image:', err)
+      alert('Failed to delete image. Please try again.')
+    }
+  }
+
   switch (pageState.status) {
     case 'loading':
       return (
@@ -523,7 +542,7 @@ function ProjectPage() {
           </Link>
         </div>
       )
-    case 'success':
+    case 'success': {
       const { project } = pageState
       return (
         <div className="p-8 space-y-8">
@@ -659,9 +678,31 @@ function ProjectPage() {
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 max-h-[100vh] overflow-y-auto">
                 {images.map((image) => (
-                  <div key={image.id} className="bg-gray-700 rounded-lg p-3">
-                    <div className="aspect-square bg-gray-600 rounded mb-2 flex items-center justify-center">
-                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div key={image.id} className="bg-gray-700 rounded-lg p-3 group relative">
+                    {/* Delete button - appears on hover */}
+                    <button
+                      onClick={() => handleDeleteImage(image.id, image.path.split('/').pop() || 'Unknown')}
+                      className="absolute top-2 right-2 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center text-xs"
+                      title="Delete image"
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+
+                    <div className="aspect-square bg-gray-600 rounded mb-2 flex items-center justify-center overflow-hidden">
+                      <img 
+                        src={`http://localhost:8080/projects/${projectId}/${image.path}`}
+                        alt={image.path.split('/').pop()}
+                        className="w-full h-full object-contain"
+                        onError={(e) => {
+                          // Fallback to icon if image fails to load
+                          const target = e.target as HTMLImageElement;
+                          target.style.display = 'none';
+                          target.nextElementSibling?.classList.remove('hidden');
+                        }}
+                      />
+                      <svg className="w-8 h-8 text-gray-400 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                       </svg>
                     </div>
@@ -872,6 +913,7 @@ function ProjectPage() {
           )}
         </div>
       )
+    }
     default:
       return null
   }

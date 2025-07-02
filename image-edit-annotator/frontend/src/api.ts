@@ -63,6 +63,7 @@ export const uploadFiles = (projectId: string, files: FileList) => {
 };
 
 export const getImages = (projectId: string) => api.get<Image[]>(`/images?projectId=${projectId}`);
+export const deleteImage = (projectId: string, imageId: string) => api.delete(`/projects/${projectId}/images/${imageId}`);
 
 export const createProgressEventSource = (projectId: string) => {
   return new EventSource(`${API_BASE_URL}/progress?projectId=${projectId}`);
