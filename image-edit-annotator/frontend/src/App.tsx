@@ -60,9 +60,10 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type ForkProjectRequest } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, getCaptionTasks, updateCaptionTask, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type CaptionTask, type ForkProjectRequest } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
+import { CaptionAnnotationWizard } from './components/CaptionAnnotationWizard'
 import { TaskStatistics } from './components/TaskStatistics'
 import { ForkProjectModal } from './components/ForkProjectModal'
 
@@ -236,14 +237,21 @@ function Home() {
                     <h3 className="text-lg font-medium text-gray-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
                       {project.name}
                     </h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      v{project.version}
+                    <div className="flex items-center space-x-2">
+                      <span className="text-sm text-gray-500 dark:text-gray-400">v{project.version}</span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                        project.projectType === 'caption' 
+                          ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400'
+                          : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                      }`}>
+                        {project.projectType === 'caption' ? 'Caption' : 'Edit'}
+                      </span>
                       {project.parentProjectId && (
-                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
                           Fork
                         </span>
                       )}
-                    </p>
+                    </div>
                   </div>
                   <div className="ml-4 flex-shrink-0">
                     <div className="w-3 h-3 bg-green-500 rounded-full opacity-75 group-hover:opacity-100 transition-opacity" />
@@ -329,12 +337,13 @@ function Home() {
 function ProjectForm() {
   const [name, setName] = useState('')
   const [version, setVersion] = useState('')
+  const [projectType, setProjectType] = useState<'edit' | 'caption'>('edit')
   const navigate = useNavigate()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      const response = await createProject({ name, version, promptButtons: [] })
+      const response = await createProject({ name, version, promptButtons: [], projectType })
       navigate(`/projects/${response.data.id}`)
     } catch (error) {
       console.error('Error creating project:', error)
@@ -384,6 +393,52 @@ function ProjectForm() {
           />
         </div>
 
+        <div className="space-y-3">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Project Type
+          </label>
+          <div className="space-y-3">
+            <div className="flex items-start space-x-3">
+              <input
+                type="radio"
+                id="edit-type"
+                name="projectType"
+                value="edit"
+                checked={projectType === 'edit'}
+                onChange={(e) => setProjectType(e.target.value as 'edit')}
+                className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+              />
+              <div className="flex-1">
+                <label htmlFor="edit-type" className="block text-sm font-medium text-gray-900 dark:text-white cursor-pointer">
+                  Image Edit Dataset
+                </label>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Create pairs of images (A → B) with edit descriptions for training image editing models
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start space-x-3">
+              <input
+                type="radio"
+                id="caption-type"
+                name="projectType"
+                value="caption"
+                checked={projectType === 'caption'}
+                onChange={(e) => setProjectType(e.target.value as 'caption')}
+                className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+              />
+              <div className="flex-1">
+                <label htmlFor="caption-type" className="block text-sm font-medium text-gray-900 dark:text-white cursor-pointer">
+                  Image Caption Dataset
+                </label>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Add descriptive captions to individual images for training vision-language models
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="pt-4">
           <button
             type="submit"
@@ -411,6 +466,7 @@ function ProjectPage() {
   const [images, setImages] = useState<Image[]>([])
   const [imagesLoading, setImagesLoading] = useState(false)
   const [tasks, setTasks] = useState<Task[]>([])
+  const [captionTasks, setCaptionTasks] = useState<CaptionTask[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
   const [taskGeneration, setTaskGeneration] = useState<{ loading: boolean; result?: TaskGenerationResponse }>({ loading: false })
   const [newPromptButton, setNewPromptButton] = useState('')
@@ -433,8 +489,15 @@ function ProjectPage() {
     if (!projectId) return
     setTasksLoading(true)
     try {
-      const response = await getTasks(projectId)
-      setTasks(response.data)
+      if (pageState.status === 'success' && pageState.project.projectType === 'caption') {
+        const response = await getCaptionTasks(projectId)
+        setCaptionTasks(response.data)
+        setTasks([]) // Clear edit tasks
+      } else {
+        const response = await getTasks(projectId)
+        setTasks(response.data)
+        setCaptionTasks([]) // Clear caption tasks
+      }
     } catch (err) {
       console.error('Error fetching tasks:', err)
     } finally {
@@ -486,19 +549,30 @@ function ProjectPage() {
   }
 
   const handleRequeueSkipped = async () => {
-    if (!projectId) return
+    if (!projectId || pageState.status !== 'success') return
     setTasksLoading(true)
     try {
-      // Get all skipped tasks and update them to not be skipped
-      const skippedTasks = tasks.filter(t => t.skipped)
-      await Promise.all(
-        skippedTasks.map(task =>
-          updateTask(task.id, { skipped: false })
+      if (pageState.project.projectType === 'caption') {
+        // Get all skipped caption tasks and update them to not be skipped
+        const skippedTasks = captionTasks.filter(t => t.skipped)
+        await Promise.all(
+          skippedTasks.map(task =>
+            updateCaptionTask(task.id, { skipped: false })
+          )
         )
-      )
+        alert(`Re-queued ${skippedTasks.length} skipped caption tasks`)
+      } else {
+        // Get all skipped edit tasks and update them to not be skipped
+        const skippedTasks = tasks.filter(t => t.skipped)
+        await Promise.all(
+          skippedTasks.map(task =>
+            updateTask(task.id, { skipped: false })
+          )
+        )
+        alert(`Re-queued ${skippedTasks.length} skipped edit tasks`)
+      }
       // Refresh tasks after re-queuing
       fetchTasks()
-      alert(`Re-queued ${skippedTasks.length} skipped tasks`)
     } catch (err) {
       console.error('Error re-queuing skipped tasks:', err)
       alert('Failed to re-queue skipped tasks')
@@ -516,7 +590,8 @@ function ProjectPage() {
       await updateProject(projectId!, {
         name: pageState.project.name,
         version: pageState.project.version,
-        promptButtons: updatedPromptButtons
+        promptButtons: updatedPromptButtons,
+        projectType: pageState.project.projectType
       })
 
       // Update local state
@@ -540,7 +615,8 @@ function ProjectPage() {
       await updateProject(projectId!, {
         name: pageState.project.name,
         version: pageState.project.version,
-        promptButtons: updatedPromptButtons
+        promptButtons: updatedPromptButtons,
+        projectType: pageState.project.projectType
       })
 
       // Update local state
@@ -784,40 +860,90 @@ function ProjectPage() {
           </div>
 
           {/* Task Statistics */}
-          {tasks.length > 0 && (
-            <TaskStatistics tasks={tasks} />
+          {(tasks.length > 0 || captionTasks.length > 0) && (
+            <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-3">Task Statistics</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {project.projectType === 'caption' ? (
+                  <>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{captionTasks.length}</div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Total</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-green-600 dark:text-green-400">
+                        {captionTasks.filter(t => t.caption?.Valid && !t.skipped).length}
+                      </div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Completed</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
+                        {captionTasks.filter(t => t.skipped).length}
+                      </div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Skipped</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
+                        {captionTasks.filter(t => !t.caption?.Valid && !t.skipped).length}
+                      </div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Pending</div>
+                    </div>
+                  </>
+                ) : (
+                  <TaskStatistics tasks={tasks} />
+                )}
+              </div>
+            </div>
           )}
 
           <div>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-white">Task Generation</h3>
-              {tasks.length > 0 && (
+              <h3 className="text-lg font-semibold text-white">
+                {project.projectType === 'caption' ? 'Caption Generation' : 'Task Generation'}
+              </h3>
+              {((project.projectType === 'caption' && captionTasks.length > 0) || 
+                (project.projectType === 'edit' && tasks.length > 0)) && (
                 <div className="flex space-x-2">
                   <Link
                     to={`/projects/${projectId}/annotate`}
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
                   >
                     {(() => {
-                      const pendingTasks = tasks.filter(t => !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length
-                      const completedTasks = tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length
-                      if (pendingTasks === 0 && completedTasks > 0) {
-                        return 'Review Annotations'
-                      } else if (completedTasks > 0) {
-                        return 'Resume Annotating'
+                      if (project.projectType === 'caption') {
+                        const pendingTasks = captionTasks.filter(t => !t.caption?.Valid && !t.skipped).length
+                        const completedTasks = captionTasks.filter(t => t.caption?.Valid && !t.skipped).length
+                        if (pendingTasks === 0 && completedTasks > 0) {
+                          return 'Review Captions'
+                        } else if (completedTasks > 0) {
+                          return 'Resume Captioning'
+                        } else {
+                          return 'Start Captioning'
+                        }
                       } else {
-                        return 'Start Annotating'
+                        const pendingTasks = tasks.filter(t => !(t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length
+                        const completedTasks = tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length
+                        if (pendingTasks === 0 && completedTasks > 0) {
+                          return 'Review Annotations'
+                        } else if (completedTasks > 0) {
+                          return 'Resume Annotating'
+                        } else {
+                          return 'Start Annotating'
+                        }
                       }
                     })()}
                   </Link>
 
                   {/* Re-queue Skipped Button */}
-                  {tasks.filter(t => t.skipped).length > 0 && (
+                  {((project.projectType === 'caption' && captionTasks.filter(t => t.skipped).length > 0) ||
+                    (project.projectType === 'edit' && tasks.filter(t => t.skipped).length > 0)) && (
                     <button
                       onClick={handleRequeueSkipped}
                       disabled={tasksLoading}
                       className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50"
                     >
-                      Re-queue Skipped ({tasks.filter(t => t.skipped).length})
+                      Re-queue Skipped ({project.projectType === 'caption' 
+                        ? captionTasks.filter(t => t.skipped).length 
+                        : tasks.filter(t => t.skipped).length})
                     </button>
                   )}
                 </div>
@@ -826,7 +952,10 @@ function ProjectPage() {
 
             <div className="bg-gray-700 rounded-lg p-4 space-y-4">
               <p className="text-gray-300 text-sm">
-                Generate annotation tasks by finding similar images for each uploaded image.
+                {project.projectType === 'caption' 
+                  ? 'Generate caption tasks for each uploaded image. One task will be created per image for you to add descriptive captions.'
+                  : 'Generate annotation tasks by finding similar images for each uploaded image.'
+                }
               </p>
 
               <button
@@ -850,18 +979,27 @@ function ProjectPage() {
           </div>
 
           {/* Export Section */}
-          {tasks.length > 0 && tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length > 0 && (
+          {((project.projectType === 'caption' && captionTasks.length > 0 && captionTasks.filter(t => t.caption?.Valid && !t.skipped).length > 0) ||
+            (project.projectType === 'edit' && tasks.length > 0 && tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length > 0)) && (
             <div>
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-white">Export Annotations</h3>
+                <h3 className="text-lg font-semibold text-white">
+                  {project.projectType === 'caption' ? 'Export Captions' : 'Export Annotations'}
+                </h3>
                 <div className="text-sm text-gray-400">
-                  {tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length} completed annotations
+                  {project.projectType === 'caption' 
+                    ? `${captionTasks.filter(t => t.caption?.Valid && !t.skipped).length} completed captions`
+                    : `${tasks.filter(t => (t.imageBId?.Valid || t.prompt?.Valid) && !t.skipped).length} completed annotations`
+                  }
                 </div>
               </div>
 
               <div className="bg-gray-700 rounded-lg p-4 space-y-4">
                 <p className="text-gray-300 text-sm">
-                  Export your completed annotations in different formats for machine learning training.
+                  {project.projectType === 'caption' 
+                    ? 'Export your completed captions in different formats for machine learning training.'
+                    : 'Export your completed annotations in different formats for machine learning training.'
+                  }
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -869,7 +1007,10 @@ function ProjectPage() {
                   <div className="bg-gray-600 rounded-lg p-4">
                     <h4 className="text-white font-medium mb-2">JSONL Format</h4>
                     <p className="text-gray-300 text-sm mb-3">
-                      Standard format with source/target paths and prompts. One JSON object per line.
+                      {project.projectType === 'caption' 
+                        ? 'Standard format with image paths and captions. One JSON object per line.'
+                        : 'Standard format with source/target paths and prompts. One JSON object per line.'
+                      }
                     </p>
                     <a
                       href={`http://localhost:8080/projects/${projectId}/export/jsonl`}
@@ -883,31 +1024,42 @@ function ProjectPage() {
                     </a>
                   </div>
 
-                  {/* AI-Toolkit Export */}
-                  <div className="bg-gray-600 rounded-lg p-4">
-                    <h4 className="text-white font-medium mb-2">AI-Toolkit Format</h4>
-                    <p className="text-gray-300 text-sm mb-3">
-                      ZIP archive with source/target folders and caption text files in both directories.
-                    </p>
-                    <a
-                      href={`http://localhost:8080/projects/${projectId}/export/ai-toolkit`}
-                      download
-                      className="inline-flex items-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
-                    >
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
-                      </svg>
-                      Download ZIP
-                    </a>
-                  </div>
+                  {/* AI-Toolkit Export - only for edit projects */}
+                  {project.projectType === 'edit' && (
+                    <div className="bg-gray-600 rounded-lg p-4">
+                      <h4 className="text-white font-medium mb-2">AI-Toolkit Format</h4>
+                      <p className="text-gray-300 text-sm mb-3">
+                        ZIP archive with source/target folders and caption text files in both directories.
+                      </p>
+                      <a
+                        href={`http://localhost:8080/projects/${projectId}/export/ai-toolkit`}
+                        download
+                        className="inline-flex items-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+                      >
+                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
+                        </svg>
+                        Download ZIP
+                      </a>
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-gray-800 rounded p-3">
                   <h5 className="text-white text-sm font-medium mb-2">Export Details:</h5>
                   <ul className="text-gray-400 text-xs space-y-1">
-                    <li>• Only completed annotations are exported (not skipped tasks)</li>
-                    <li>• JSONL: Each line contains {`{"a": "source_path", "b": "target_path", "prompt": "caption"}`}</li>
-                    <li>• AI-Toolkit: Creates source/ and target/ folders with matching filenames + .txt captions in both folders</li>
+                    {project.projectType === 'caption' ? (
+                      <>
+                        <li>• Only completed captions are exported (not skipped tasks)</li>
+                        <li>• JSONL: Each line contains {`{"image": "path/to/image.jpg", "caption": "descriptive text"}`}</li>
+                      </>
+                    ) : (
+                      <>
+                        <li>• Only completed annotations are exported (not skipped tasks)</li>
+                        <li>• JSONL: Each line contains {`{"a": "source_path", "b": "target_path", "prompt": "caption"}`}</li>
+                        <li>• AI-Toolkit: Creates source/ and target/ folders with matching filenames + .txt captions in both folders</li>
+                      </>
+                    )}
                   </ul>
                 </div>
               </div>
@@ -915,10 +1067,12 @@ function ProjectPage() {
           )}
 
           {/* Task List */}
-          {tasks.length > 0 && (
+          {(tasks.length > 0 || captionTasks.length > 0) && (
             <div>
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-white">Tasks ({tasks.length})</h3>
+                <h3 className="text-lg font-semibold text-white">
+                  {project.projectType === 'caption' ? `Caption Tasks (${captionTasks.length})` : `Edit Tasks (${tasks.length})`}
+                </h3>
                 <button
                   onClick={fetchTasks}
                   disabled={tasksLoading}
@@ -930,48 +1084,87 @@ function ProjectPage() {
 
               <div className="bg-gray-700 rounded-lg overflow-hidden">
                 <div className="max-h-64 overflow-y-auto">
-                  {tasks.map((task, index) => {
-                    const isCompleted = (task.imageBId?.Valid || task.prompt?.Valid) && !task.skipped
-                    const isSkipped = task.skipped
+                  {project.projectType === 'caption' ? (
+                    captionTasks.map((task, index) => {
+                      const isCompleted = task.caption?.Valid && !task.skipped
+                      const isSkipped = task.skipped
 
-                    return (
-                      <div
-                        key={task.id}
-                        className={`flex items-center justify-between p-3 border-b border-gray-600 last:border-b-0 ${isCompleted ? 'bg-green-900/20' :
-                          isSkipped ? 'bg-yellow-900/20' :
-                            'bg-gray-800/50'
-                          }`}
-                      >
-                        <div className="flex items-center space-x-3">
-                          <div className="text-sm font-mono text-gray-400">
-                            #{index + 1}
-                          </div>
-                          <div className={`w-3 h-3 rounded-full ${isCompleted ? 'bg-green-500' :
-                            isSkipped ? 'bg-yellow-500' :
-                              'bg-gray-500'
-                            }`} />
-                          <div className="text-sm text-white">
-                            Task {task.id.substring(0, 8)}...
-                          </div>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <div className={`px-2 py-1 rounded text-xs font-medium ${isCompleted ? 'bg-green-600 text-white' :
-                            isSkipped ? 'bg-yellow-600 text-white' :
-                              'bg-gray-600 text-gray-300'
-                            }`}>
-                            {isCompleted ? 'Completed' : isSkipped ? 'Skipped' : 'Pending'}
-                          </div>
-
-                          {task.candidateBIds && task.candidateBIds.length > 0 && (
-                            <div className="text-xs text-gray-400">
-                              {task.candidateBIds.length} candidates
+                      return (
+                        <div
+                          key={task.id}
+                          className={`flex items-center justify-between p-3 border-b border-gray-600 last:border-b-0 ${isCompleted ? 'bg-green-900/20' :
+                            isSkipped ? 'bg-yellow-900/20' :
+                              'bg-gray-800/50'
+                            }`}
+                        >
+                          <div className="flex items-center space-x-3">
+                            <div className="text-sm font-mono text-gray-400">
+                              #{index + 1}
                             </div>
-                          )}
+                            <div className={`w-3 h-3 rounded-full ${isCompleted ? 'bg-green-500' :
+                              isSkipped ? 'bg-yellow-500' :
+                                'bg-gray-500'
+                              }`} />
+                            <div className="text-sm text-white">
+                              Caption {task.id.substring(0, 8)}...
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <div className={`px-2 py-1 rounded text-xs font-medium ${isCompleted ? 'bg-green-600 text-white' :
+                              isSkipped ? 'bg-yellow-600 text-white' :
+                                'bg-gray-600 text-gray-300'
+                              }`}>
+                              {isCompleted ? 'Completed' : isSkipped ? 'Skipped' : 'Pending'}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    )
-                  })}
+                      )
+                    })
+                  ) : (
+                    tasks.map((task, index) => {
+                      const isCompleted = (task.imageBId?.Valid || task.prompt?.Valid) && !task.skipped
+                      const isSkipped = task.skipped
+
+                      return (
+                        <div
+                          key={task.id}
+                          className={`flex items-center justify-between p-3 border-b border-gray-600 last:border-b-0 ${isCompleted ? 'bg-green-900/20' :
+                            isSkipped ? 'bg-yellow-900/20' :
+                              'bg-gray-800/50'
+                            }`}
+                        >
+                          <div className="flex items-center space-x-3">
+                            <div className="text-sm font-mono text-gray-400">
+                              #{index + 1}
+                            </div>
+                            <div className={`w-3 h-3 rounded-full ${isCompleted ? 'bg-green-500' :
+                              isSkipped ? 'bg-yellow-500' :
+                                'bg-gray-500'
+                              }`} />
+                            <div className="text-sm text-white">
+                              Task {task.id.substring(0, 8)}...
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <div className={`px-2 py-1 rounded text-xs font-medium ${isCompleted ? 'bg-green-600 text-white' :
+                              isSkipped ? 'bg-yellow-600 text-white' :
+                                'bg-gray-600 text-gray-300'
+                              }`}>
+                              {isCompleted ? 'Completed' : isSkipped ? 'Skipped' : 'Pending'}
+                            </div>
+
+                            {task.candidateBIds && task.candidateBIds.length > 0 && (
+                              <div className="text-xs text-gray-400">
+                                {task.candidateBIds.length} candidates
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })
+                  )}
                 </div>
               </div>
             </div>
@@ -986,6 +1179,23 @@ function ProjectPage() {
 
 function AnnotationPage() {
   const { projectId } = useParams<{ projectId: string }>()
+  const [project, setProject] = useState<Project | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchProject = async () => {
+      if (!projectId) return
+      try {
+        const response = await getProject(projectId)
+        setProject(response.data)
+      } catch (error) {
+        console.error('Error fetching project:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchProject()
+  }, [projectId])
 
   if (!projectId) {
     return (
@@ -995,7 +1205,28 @@ function AnnotationPage() {
     )
   }
 
-  return <AnnotationWizard projectId={projectId} />
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-64">
+        <div className="text-white">Loading project...</div>
+      </div>
+    )
+  }
+
+  if (!project) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-red-400">Project not found</p>
+      </div>
+    )
+  }
+
+  // Render appropriate annotation wizard based on project type
+  if (project.projectType === 'caption') {
+    return <CaptionAnnotationWizard projectId={projectId} />
+  } else {
+    return <AnnotationWizard projectId={projectId} />
+  }
 }
 
 export default App

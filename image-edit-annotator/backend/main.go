@@ -55,6 +55,11 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 	project.ID = uuid.New().String()
 
+	// Set default project type if not provided
+	if project.ProjectType == "" {
+		project.ProjectType = "edit"
+	}
+
 	if err := createProject(&project); err != nil {
 		http.Error(w, "Failed to create project", http.StatusInternalServerError)
 		logError(r.Context(), "Failed to create project", err, slog.String("project_name", project.Name))
@@ -679,6 +684,68 @@ func findSimilarImages(targetImage Image, allImages []Image, threshold int) ([]S
 	return similar, nil
 }
 
+func generateCaptionTasksForProject(projectID string) (*TaskGenerationResponse, error) {
+	images, err := getImagesByProjectID(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get images: %v", err)
+	}
+
+	if len(images) == 0 {
+		return &TaskGenerationResponse{TasksCreated: 0, AverageCandidates: 0}, nil
+	}
+
+	var tasksCreated int
+	for _, img := range images {
+		// Check if caption task already exists for this image
+		exists, err := captionTaskExistsForImage(projectID, img.ID)
+		if err != nil {
+			logger.Warn("Error checking if caption task exists",
+				"error", err,
+				"image_id", img.ID,
+			)
+			continue
+		}
+		if exists {
+			logger.Debug("Caption task already exists for image, skipping",
+				"image_id", img.ID,
+				"project_id", projectID,
+			)
+			continue
+		}
+
+		// Create caption task
+		task := &CaptionTask{
+			ID:        uuid.New().String(),
+			ProjectID: projectID,
+			ImageID:   img.ID,
+			Caption:   sql.NullString{}, // Will be set during annotation
+			Skipped:   false,
+		}
+
+		logger.Debug("Creating caption task",
+			"task_id", task.ID,
+			"project_id", projectID,
+			"image_id", img.ID,
+		)
+		if err := createCaptionTask(task); err != nil {
+			logger.Error("Error creating caption task",
+				"error", err,
+				"task_id", task.ID,
+				"project_id", projectID,
+				"image_id", img.ID,
+			)
+			continue
+		}
+
+		tasksCreated++
+	}
+
+	return &TaskGenerationResponse{
+		TasksCreated:      tasksCreated,
+		AverageCandidates: 1, // Each caption task has one image
+	}, nil
+}
+
 func generateTasksForProject(projectID string, threshold, maxCandidates int) (*TaskGenerationResponse, error) {
 	images, err := getImagesByProjectID(projectID)
 	if err != nil {
@@ -806,13 +873,25 @@ func generateTasksHandler(w http.ResponseWriter, r *http.Request) {
 		req.MaxCandidates = 5
 	}
 
-	// Generate tasks
-	logInfo(r.Context(), "Generating tasks",
-		slog.String("project_id", projectID),
-		slog.Int("similarity_threshold", req.SimilarityThreshold),
-		slog.Int("max_candidates", req.MaxCandidates),
-	)
-	response, err := generateTasksForProject(projectID, req.SimilarityThreshold, req.MaxCandidates)
+	// Generate tasks based on project type
+	var response *TaskGenerationResponse
+	
+	if project.ProjectType == "caption" {
+		logInfo(r.Context(), "Generating caption tasks",
+			slog.String("project_id", projectID),
+			slog.String("project_type", project.ProjectType),
+		)
+		response, err = generateCaptionTasksForProject(projectID)
+	} else {
+		logInfo(r.Context(), "Generating edit tasks",
+			slog.String("project_id", projectID),
+			slog.String("project_type", project.ProjectType),
+			slog.Int("similarity_threshold", req.SimilarityThreshold),
+			slog.Int("max_candidates", req.MaxCandidates),
+		)
+		response, err = generateTasksForProject(projectID, req.SimilarityThreshold, req.MaxCandidates)
+	}
+	
 	if err != nil {
 		http.Error(w, "Failed to generate tasks", http.StatusInternalServerError)
 		logError(r.Context(), "Failed to generate tasks", err, slog.String("project_id", projectID))
@@ -820,6 +899,7 @@ func generateTasksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	logInfo(r.Context(), "Tasks generated successfully",
 		slog.String("project_id", projectID),
+		slog.String("project_type", project.ProjectType),
 		slog.Int("tasks_created", response.TasksCreated),
 		slog.Float64("average_candidates", response.AverageCandidates),
 	)
@@ -888,6 +968,123 @@ func getTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	if task == nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
+func getCaptionTasksHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/caption-tasks")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if project exists and is caption type
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for caption tasks", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	tasks, err := getCaptionTasksByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get caption tasks", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption tasks", err, slog.String("project_id", projectID))
+		return
+	}
+
+	if tasks == nil {
+		tasks = []CaptionTask{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tasks)
+}
+
+func getCaptionTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := r.URL.Path[len("/caption-tasks/"):]
+	if taskID == "" {
+		http.Error(w, "Caption task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	task, err := getCaptionTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	if task == nil {
+		http.Error(w, "Caption task not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
+func updateCaptionTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := r.URL.Path[len("/caption-tasks/"):]
+	if taskID == "" {
+		http.Error(w, "Caption task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if task exists
+	existingTask, err := getCaptionTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption task for update", err, slog.String("task_id", taskID))
+		return
+	}
+	if existingTask == nil {
+		http.Error(w, "Caption task not found", http.StatusNotFound)
+		return
+	}
+
+	var updatedTask CaptionTask
+	if err := json.NewDecoder(r.Body).Decode(&updatedTask); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	updatedTask.ID = taskID // Ensure the ID from the URL is used
+
+	if err := updateCaptionTask(&updatedTask); err != nil {
+		http.Error(w, "Failed to update caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to update caption task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	// Return the updated task
+	task, err := getCaptionTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get updated caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get updated caption task", err, slog.String("task_id", taskID))
 		return
 	}
 
@@ -1017,69 +1214,127 @@ func exportJSONLHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get completed tasks
-	tasks, err := getTasksByProjectID(projectID)
-	if err != nil {
-		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to get tasks for JSONL export", err, slog.String("project_id", projectID))
-		return
-	}
-
-	// Get all images for path lookup
-	images, err := getImagesByProjectID(projectID)
-	if err != nil {
-		http.Error(w, "Failed to get images", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to get images for JSONL export", err, slog.String("project_id", projectID))
-		return
-	}
-
-	// Create image lookup map
-	imageMap := make(map[string]*Image)
-	for i := range images {
-		imageMap[images[i].ID] = &images[i]
-	}
-
-	// Set response headers for file download
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_annotations.jsonl\"", project.Name))
-
-	// Write JSONL format
-	for _, task := range tasks {
-		// Only export completed tasks (not skipped, has imageB or prompt)
-		if task.Skipped || (!task.ImageBId.Valid && !task.Prompt.Valid) {
-			continue
-		}
-
-		imageA := imageMap[task.ImageAID]
-		if imageA == nil {
-			continue
-		}
-
-		// Create export record
-		record := map[string]interface{}{
-			"a": imageA.Path,
-		}
-
-		if task.ImageBId.Valid {
-			imageB := imageMap[task.ImageBId.String]
-			if imageB != nil {
-				record["b"] = imageB.Path
-			}
-		}
-
-		if task.Prompt.Valid {
-			record["prompt"] = task.Prompt.String
-		}
-
-		// Write JSON line
-		jsonData, err := json.Marshal(record)
+	// Handle different project types for export
+	if project.ProjectType == "caption" {
+		// Caption project export
+		captionTasks, err := getCaptionTasksByProjectID(projectID)
 		if err != nil {
-			logError(r.Context(), "Failed to marshal task record", err, slog.String("task_id", task.ID))
-			continue
+			http.Error(w, "Failed to get caption tasks", http.StatusInternalServerError)
+			logError(r.Context(), "Failed to get caption tasks for JSONL export", err, slog.String("project_id", projectID))
+			return
 		}
 
-		w.Write(jsonData)
-		w.Write([]byte("\n"))
+		// Get all images for path lookup
+		images, err := getImagesByProjectID(projectID)
+		if err != nil {
+			http.Error(w, "Failed to get images", http.StatusInternalServerError)
+			logError(r.Context(), "Failed to get images for JSONL export", err, slog.String("project_id", projectID))
+			return
+		}
+
+		// Create image lookup map
+		imageMap := make(map[string]*Image)
+		for i := range images {
+			imageMap[images[i].ID] = &images[i]
+		}
+
+		// Set response headers for file download
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_captions.jsonl\"", project.Name))
+
+		// Write JSONL format for captions
+		for _, task := range captionTasks {
+			// Only export completed tasks (not skipped, has caption)
+			if task.Skipped || !task.Caption.Valid {
+				continue
+			}
+
+			image := imageMap[task.ImageID]
+			if image == nil {
+				continue
+			}
+
+			// Create export record
+			record := map[string]interface{}{
+				"image":   image.Path,
+				"caption": task.Caption.String,
+			}
+
+			// Write JSON line
+			jsonData, err := json.Marshal(record)
+			if err != nil {
+				logError(r.Context(), "Failed to marshal caption task record", err, slog.String("task_id", task.ID))
+				continue
+			}
+
+			w.Write(jsonData)
+			w.Write([]byte("\n"))
+		}
+	} else {
+		// Edit project export (existing functionality)
+		tasks, err := getTasksByProjectID(projectID)
+		if err != nil {
+			http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
+			logError(r.Context(), "Failed to get tasks for JSONL export", err, slog.String("project_id", projectID))
+			return
+		}
+
+		// Get all images for path lookup
+		images, err := getImagesByProjectID(projectID)
+		if err != nil {
+			http.Error(w, "Failed to get images", http.StatusInternalServerError)
+			logError(r.Context(), "Failed to get images for JSONL export", err, slog.String("project_id", projectID))
+			return
+		}
+
+		// Create image lookup map
+		imageMap := make(map[string]*Image)
+		for i := range images {
+			imageMap[images[i].ID] = &images[i]
+		}
+
+		// Set response headers for file download
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_annotations.jsonl\"", project.Name))
+
+		// Write JSONL format for edit tasks
+		for _, task := range tasks {
+			// Only export completed tasks (not skipped, has imageB or prompt)
+			if task.Skipped || (!task.ImageBId.Valid && !task.Prompt.Valid) {
+				continue
+			}
+
+			imageA := imageMap[task.ImageAID]
+			if imageA == nil {
+				continue
+			}
+
+			// Create export record
+			record := map[string]interface{}{
+				"a": imageA.Path,
+			}
+
+			if task.ImageBId.Valid {
+				imageB := imageMap[task.ImageBId.String]
+				if imageB != nil {
+					record["b"] = imageB.Path
+				}
+			}
+
+			if task.Prompt.Valid {
+				record["prompt"] = task.Prompt.String
+			}
+
+			// Write JSON line
+			jsonData, err := json.Marshal(record)
+			if err != nil {
+				logError(r.Context(), "Failed to marshal task record", err, slog.String("task_id", task.ID))
+				continue
+			}
+
+			w.Write(jsonData)
+			w.Write([]byte("\n"))
+		}
 	}
 
 	logInfo(r.Context(), "JSONL export completed", slog.String("project_id", projectID))
@@ -1106,6 +1361,12 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if project == nil {
 		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	// AI-toolkit export is only available for edit projects
+	if project.ProjectType == "caption" {
+		http.Error(w, "AI-toolkit export is not available for caption projects", http.StatusBadRequest)
 		return
 	}
 
@@ -1532,6 +1793,10 @@ func main() {
 			getTasksHandler(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/caption-tasks") && r.Method == http.MethodGet {
+			getCaptionTasksHandler(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/fork") && r.Method == http.MethodPost {
 			forkProjectHandler(w, r)
 			return
@@ -1573,6 +1838,16 @@ func main() {
 			getTaskHandler(w, r)
 		case http.MethodPut:
 			updateTaskHandler(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/caption-tasks/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCaptionTaskHandler(w, r)
+		case http.MethodPut:
+			updateCaptionTaskHandler(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}

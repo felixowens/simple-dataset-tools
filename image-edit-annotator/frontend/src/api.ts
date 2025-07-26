@@ -15,6 +15,7 @@ export interface Project {
   version: string;
   promptButtons: string[];
   parentProjectId?: string | null;
+  projectType: 'edit' | 'caption';
 }
 
 export interface ProjectWithStats {
@@ -27,6 +28,7 @@ export interface ProjectWithStats {
   completedTaskCount: number;
   createdAt?: string;
   parentProjectId?: string | null;
+  projectType: 'edit' | 'caption';
 }
 
 export const createProject = (project: Omit<Project, 'id'>) => api.post<Project>('/projects', project);
@@ -82,6 +84,14 @@ export interface Task {
   candidateBIds: string[] | null;
 }
 
+export interface CaptionTask {
+  id: string;
+  projectId: string;
+  imageId: string;
+  caption: { String: string; Valid: boolean } | null;
+  skipped: boolean;
+}
+
 export interface TaskGenerationRequest {
   similarityThreshold?: number;
   maxCandidates?: number;
@@ -98,6 +108,10 @@ export const generateTasks = (projectId: string, request?: TaskGenerationRequest
 export const getTasks = (projectId: string) => api.get<Task[]>(`/projects/${projectId}/tasks`);
 export const getTask = (taskId: string) => api.get<Task>(`/tasks/${taskId}`);
 export const updateTask = (taskId: string, task: Partial<Task>) => api.put<Task>(`/tasks/${taskId}`, task);
+
+export const getCaptionTasks = (projectId: string) => api.get<CaptionTask[]>(`/projects/${projectId}/caption-tasks`);
+export const getCaptionTask = (taskId: string) => api.get<CaptionTask>(`/caption-tasks/${taskId}`);
+export const updateCaptionTask = (taskId: string, task: Partial<CaptionTask>) => api.put<CaptionTask>(`/caption-tasks/${taskId}`, task);
 
 export interface ForkProjectRequest {
   name: string;
