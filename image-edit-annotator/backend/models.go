@@ -12,6 +12,8 @@ type Project struct {
 	PromptButtons   []string  `json:"promptButtons" db:"prompt_buttons"`
 	ParentProjectID *string   `json:"parentProjectId" db:"parent_project_id"`
 	ProjectType     string    `json:"projectType" db:"project_type"` // "edit" or "caption"
+	CaptionAPI      *string   `json:"captionApi" db:"caption_api"`   // JSON configuration for caption API
+	SystemPrompt    *string   `json:"systemPrompt" db:"system_prompt"` // Custom system prompt for captioning
 	CreatedAt       time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt       time.Time `json:"updatedAt" db:"updated_at"`
 }
@@ -44,4 +46,21 @@ type CaptionTask struct {
 	Skipped     bool           `json:"skipped" db:"skipped"`
 	CreatedAt   time.Time      `json:"createdAt" db:"created_at"`
 	UpdatedAt   time.Time      `json:"updatedAt" db:"updated_at"`
+}
+
+type CaptionAPIConfig struct {
+	Provider string `json:"provider"` // "gemini", "openai", etc.
+	APIKey   string `json:"apiKey"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+type CaptionRequest struct {
+	ImageBase64  string `json:"imageBase64"`
+	SystemPrompt string `json:"systemPrompt"`
+}
+
+type CaptionResponse struct {
+	Caption string `json:"caption"`
+	Error   string `json:"error,omitempty"`
 }

@@ -1743,6 +1743,42 @@ func forkProjectHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(forkedProject)
 }
 
+func autoCaptionTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/caption-tasks/"), "/auto-caption")
+	if taskID == "" {
+		http.Error(w, "Caption task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get the task to find the project ID
+	task, err := getCaptionTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption task for auto-caption", err, slog.String("task_id", taskID))
+		return
+	}
+	if task == nil {
+		http.Error(w, "Caption task not found", http.StatusNotFound)
+		return
+	}
+
+	// Generate caption
+	response, err := GenerateCaptionForTask(task.ProjectID, taskID)
+	if err != nil {
+		http.Error(w, "Failed to generate caption", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to generate caption", err, slog.String("task_id", taskID))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins for now
@@ -1843,6 +1879,10 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/caption-tasks/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/auto-caption") && r.Method == http.MethodPost {
+			autoCaptionTaskHandler(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getCaptionTaskHandler(w, r)

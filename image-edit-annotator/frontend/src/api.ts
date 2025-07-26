@@ -16,6 +16,8 @@ export interface Project {
   promptButtons: string[];
   parentProjectId?: string | null;
   projectType: 'edit' | 'caption';
+  captionApi?: string | null;
+  systemPrompt?: string | null;
 }
 
 export interface ProjectWithStats {
@@ -29,6 +31,8 @@ export interface ProjectWithStats {
   createdAt?: string;
   parentProjectId?: string | null;
   projectType: 'edit' | 'caption';
+  captionApi?: string | null;
+  systemPrompt?: string | null;
 }
 
 export const createProject = (project: Omit<Project, 'id'>) => api.post<Project>('/projects', project);
@@ -120,3 +124,18 @@ export interface ForkProjectRequest {
 
 export const forkProject = (sourceProjectId: string, forkData: ForkProjectRequest) => 
   api.post<Project>(`/projects/${sourceProjectId}/fork`, forkData);
+
+export interface CaptionAPIConfig {
+  provider: string;
+  apiKey: string;
+  endpoint?: string;
+  model?: string;
+}
+
+export interface AutoCaptionResponse {
+  caption?: string;
+  error?: string;
+}
+
+export const autoCaptionTask = (taskId: string) => 
+  api.post<AutoCaptionResponse>(`/caption-tasks/${taskId}/auto-caption`);

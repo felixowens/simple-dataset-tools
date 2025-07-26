@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getCaptionTasks, getImages, updateCaptionTask, getProject, type CaptionTask, type Image, type Project } from '../api'
+import { getCaptionTasks, getImages, updateCaptionTask, getProject, autoCaptionTask, type CaptionTask, type Image, type Project } from '../api'
 
 interface CaptionAnnotationWizardProps {
   projectId: string
@@ -14,6 +14,7 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [autoCaptioning, setAutoCaptioning] = useState(false)
   const [caption, setCaption] = useState('')
 
   const currentTask = tasks[currentTaskIndex]
@@ -117,6 +118,25 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
       alert('Failed to skip task')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleAutoCaption = async () => {
+    if (!currentTask) return
+
+    setAutoCaptioning(true)
+    try {
+      const response = await autoCaptionTask(currentTask.id)
+      if (response.data.error) {
+        alert(`Auto-caption failed: ${response.data.error}`)
+      } else if (response.data.caption) {
+        setCaption(response.data.caption)
+      }
+    } catch (error) {
+      console.error('Error generating auto-caption:', error)
+      alert('Failed to generate caption automatically')
+    } finally {
+      setAutoCaptioning(false)
     }
   }
 
@@ -411,14 +431,23 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
           <div className="flex justify-end space-x-3">
             <button
               onClick={handleSkip}
-              disabled={saving}
+              disabled={saving || autoCaptioning}
               className="px-6 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50"
             >
               Skip Image
             </button>
+            {project?.captionApi && (
+              <button
+                onClick={handleAutoCaption}
+                disabled={saving || autoCaptioning}
+                className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+              >
+                {autoCaptioning ? 'Generating...' : 'Auto Caption'}
+              </button>
+            )}
             <button
               onClick={handleSave}
-              disabled={saving || !caption.trim()}
+              disabled={saving || autoCaptioning || !caption.trim()}
               className="px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save & Next'}

@@ -76,6 +76,7 @@ func runMigrations() error {
 		{3, addImagePathConstraint},
 		{4, addParentProjectIdToProjects},
 		{5, addProjectTypeSupport},
+		{6, addCaptionAPISupport},
 	}
 
 	for _, m := range migrations {
@@ -202,6 +203,22 @@ func addProjectTypeSupport() error {
 	return nil
 }
 
+func addCaptionAPISupport() error {
+	queries := []string{
+		// Add caption_api and system_prompt columns to projects table
+		`ALTER TABLE projects ADD COLUMN caption_api TEXT`,
+		`ALTER TABLE projects ADD COLUMN system_prompt TEXT`,
+	}
+
+	for _, query := range queries {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("failed to execute query: %s - %v", query, err)
+		}
+	}
+
+	return nil
+}
+
 // Project database operations
 func createProject(project *Project) error {
 	promptButtonsJSON, err := json.Marshal(project.PromptButtons)
@@ -209,8 +226,8 @@ func createProject(project *Project) error {
 		return fmt.Errorf("failed to marshal prompt buttons: %v", err)
 	}
 	_, err = db.Exec(
-		"INSERT INTO projects (id, name, version, prompt_buttons, parent_project_id, project_type) VALUES (?, ?, ?, ?, ?, ?)",
-		project.ID, project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType,
+		"INSERT INTO projects (id, name, version, prompt_buttons, parent_project_id, project_type, caption_api, system_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		project.ID, project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.CaptionAPI, project.SystemPrompt,
 	)
 	return err
 }
@@ -219,8 +236,8 @@ func getProject(id string) (*Project, error) {
 	var project Project
 	var promptButtonsJSON string
 	err := db.QueryRow(
-		"SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit') FROM projects WHERE id = ?", id,
-	).Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType)
+		"SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit'), caption_api, system_prompt FROM projects WHERE id = ?", id,
+	).Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType, &project.CaptionAPI, &project.SystemPrompt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -237,7 +254,7 @@ func getProject(id string) (*Project, error) {
 }
 
 func listProjects() ([]Project, error) {
-	rows, err := db.Query("SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit') FROM projects ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit'), caption_api, system_prompt FROM projects ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +264,7 @@ func listProjects() ([]Project, error) {
 	for rows.Next() {
 		var project Project
 		var promptButtonsJSON string
-		if err := rows.Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType); err != nil {
+		if err := rows.Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType, &project.CaptionAPI, &project.SystemPrompt); err != nil {
 			return nil, err
 		}
 		
@@ -267,8 +284,8 @@ func updateProject(project *Project) error {
 		return fmt.Errorf("failed to marshal prompt buttons: %v", err)
 	}
 	_, err = db.Exec(
-		"UPDATE projects SET name = ?, version = ?, prompt_buttons = ?, parent_project_id = ?, project_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.ID,
+		"UPDATE projects SET name = ?, version = ?, prompt_buttons = ?, parent_project_id = ?, project_type = ?, caption_api = ?, system_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.CaptionAPI, project.SystemPrompt, project.ID,
 	)
 	return err
 }

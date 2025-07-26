@@ -66,6 +66,7 @@ import { AnnotationWizard } from './components/AnnotationWizard'
 import { CaptionAnnotationWizard } from './components/CaptionAnnotationWizard'
 import { TaskStatistics } from './components/TaskStatistics'
 import { ForkProjectModal } from './components/ForkProjectModal'
+import { ProjectSettingsModal } from './components/ProjectSettingsModal'
 
 function Home() {
   const [projects, setProjects] = useState<ProjectWithStats[]>([])
@@ -471,6 +472,7 @@ function ProjectPage() {
   const [taskGeneration, setTaskGeneration] = useState<{ loading: boolean; result?: TaskGenerationResponse }>({ loading: false })
   const [newPromptButton, setNewPromptButton] = useState('')
   const [promptButtonsExpanded, setPromptButtonsExpanded] = useState(false)
+  const [showSettingsModal, setShowSettingsModal] = useState(false)
 
   const fetchImages = async () => {
     if (!projectId) return
@@ -649,6 +651,13 @@ function ProjectPage() {
     }
   }
 
+  const handleProjectUpdated = (updatedProject: Project) => {
+    setPageState({
+      status: 'success',
+      project: updatedProject
+    })
+  }
+
   switch (pageState.status) {
     case 'loading':
       return (
@@ -709,15 +718,27 @@ function ProjectPage() {
                   </span>
                 </div>
               </div>
-              <Link
-                to="/"
-                className="flex items-center px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
-              >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                </svg>
-                Back to Home
-              </Link>
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={() => setShowSettingsModal(true)}
+                  className="flex items-center px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors border border-gray-300 dark:border-gray-600 rounded-lg hover:border-gray-400 dark:hover:border-gray-500"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  Edit Project
+                </button>
+                <Link
+                  to="/"
+                  className="flex items-center px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                  Back to Home
+                </Link>
+              </div>
             </div>
           </div>
 
@@ -1169,6 +1190,14 @@ function ProjectPage() {
               </div>
             </div>
           )}
+
+          {/* Project Settings Modal */}
+          <ProjectSettingsModal
+            project={project}
+            isOpen={showSettingsModal}
+            onClose={() => setShowSettingsModal(false)}
+            onProjectUpdated={handleProjectUpdated}
+          />
         </div>
       )
     }
