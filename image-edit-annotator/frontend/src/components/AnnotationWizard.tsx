@@ -17,6 +17,7 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
   const [saving, setSaving] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [selectedImageBId, setSelectedImageBId] = useState<string>('')
+  const [showAllImages, setShowAllImages] = useState(false)
 
   const currentTask = tasks[currentTaskIndex]
   const totalTasks = tasks.length
@@ -125,6 +126,7 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
       return distance
     } catch (error) {
       // Fallback: simple character comparison for debugging
+      console.warn('Error calculating pHash distance:', error)
       let distance = 0
       const minLength = Math.min(hash1.length, hash2.length)
       for (let i = 0; i < minLength; i++) {
@@ -449,18 +451,37 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
               )}
             </div>
 
-            {/* Candidate Images Selection */}
+            {/* Image Selection */}
             <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700 @3xl:col-span-2">
-              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-                {candidateImages.length > 0 ? 'Candidate Images' : 'All Project Images'} 
-                {candidateImages.length === 0 && imageA && (
-                  <span className="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">
-                    (sorted by similarity)
-                  </span>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                  Choose Target Image (B)
+                </h3>
+                {candidateImages.length > 0 && (
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => setShowAllImages(false)}
+                      className={`px-3 py-1 text-sm rounded-lg transition-colors ${!showAllImages
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
+                    >
+                      Candidates ({candidateImages.length})
+                    </button>
+                    <button
+                      onClick={() => setShowAllImages(true)}
+                      className={`px-3 py-1 text-sm rounded-lg transition-colors ${showAllImages
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
+                    >
+                      All Images (by similarity)
+                    </button>
+                  </div>
                 )}
-              </h3>
+              </div>
 
-              {candidateImages.length > 0 ? (
+              {candidateImages.length > 0 && !showAllImages ? (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
                   {candidateImages.map((image) => (
                     <div
@@ -479,7 +500,14 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
                         />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-gray-900 dark:text-white truncate">{image.path.split('/').pop()}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{image.pHash.substring(0, 12)}...</p>
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{image.pHash.substring(0, 12)}...</p>
+                            {imageA && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
+                                similarity: {Math.max(0, 64 - calculatePHashDistance(imageA.pHash, image.pHash))}/64
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -493,9 +521,9 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
                   ).map((image) => (
                     <div
                       key={image.id}
-                      className={`cursor-pointer border-2 rounded-lg p-2 transition-all ${selectedImageBId === image.id
-                        ? 'border-indigo-500 bg-indigo-900/30'
-                        : 'border-gray-500 hover:border-gray-400'
+                      className={`cursor-pointer border-2 rounded-lg p-3 transition-all ${selectedImageBId === image.id
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                        : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
                         }`}
                       onClick={() => setSelectedImageBId(image.id)}
                     >
@@ -503,14 +531,14 @@ export function AnnotationWizard({ projectId }: AnnotationWizardProps) {
                         <img
                           src={getImageUrl(image.path)}
                           alt="Project image"
-                          className="w-20 h-20 object-contain bg-gray-800 rounded"
+                          className="w-20 h-20 object-contain bg-gray-100 dark:bg-gray-900 rounded-lg"
                         />
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm text-white truncate">{image.path.split('/').pop()}</p>
+                          <p className="text-sm text-gray-900 dark:text-white truncate">{image.path.split('/').pop()}</p>
                           <div className="flex items-center justify-between">
-                            <p className="text-xs text-gray-400 font-mono">{image.pHash.substring(0, 12)}...</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{image.pHash.substring(0, 12)}...</p>
                             {imageA && (
-                              <p className="text-xs text-gray-500">
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
                                 similarity: {Math.max(0, 64 - calculatePHashDistance(imageA.pHash, image.pHash))}/64
                               </p>
                             )}
