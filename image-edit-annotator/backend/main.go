@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -1491,6 +1492,164 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 		slog.Int("exported_pairs", exportCount))
 }
 
+func exportImageTextPairsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/export/image-text-pairs")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if project exists
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get project for image-text-pairs export", err, slog.String("project_id", projectID))
+		return
+	}
+	if project == nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
+	// Image-text-pairs export is only available for caption projects
+	if project.ProjectType != "caption" {
+		http.Error(w, "Image-text-pairs export is only available for caption projects", http.StatusBadRequest)
+		return
+	}
+
+	// Get completed caption tasks
+	captionTasks, err := getCaptionTasksByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get caption tasks", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption tasks for image-text-pairs export", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Get all images for path lookup
+	images, err := getImagesByProjectID(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get images", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get images for image-text-pairs export", err, slog.String("project_id", projectID))
+		return
+	}
+
+	// Create image lookup map
+	imageMap := make(map[string]*Image)
+	for i := range images {
+		imageMap[images[i].ID] = &images[i]
+	}
+
+	// Create temporary export directory
+	exportDir := filepath.Join("data", "exports", projectID+"-image-text-pairs")
+
+	// Clean and create directory
+	os.RemoveAll(exportDir)
+	if err := os.MkdirAll(exportDir, 0755); err != nil {
+		http.Error(w, "Failed to create export directory", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create export directory", err)
+		return
+	}
+
+	// Process completed caption tasks
+	exportCount := 0
+	for _, task := range captionTasks {
+		// Only export completed tasks (not skipped, has caption)
+		if task.Skipped || !task.Caption.Valid {
+			continue
+		}
+
+		image := imageMap[task.ImageID]
+		if image == nil {
+			continue
+		}
+
+		// Generate sequential filename
+		imageFileName := fmt.Sprintf("%d.png", exportCount+1)
+		textFileName := fmt.Sprintf("%d.txt", exportCount+1)
+
+		// Read and convert image to PNG
+		sourceImagePath := filepath.Join("data", "projects", projectID, image.Path)
+		destImagePath := filepath.Join(exportDir, imageFileName)
+		
+		if err := convertImageToPNG(sourceImagePath, destImagePath); err != nil {
+			logError(r.Context(), "Failed to convert image to PNG", err,
+				slog.String("source", sourceImagePath),
+				slog.String("dest", destImagePath))
+			continue
+		}
+
+		// Write caption text file
+		textFilePath := filepath.Join(exportDir, textFileName)
+		captionContent := []byte(task.Caption.String)
+
+		if err := os.WriteFile(textFilePath, captionContent, 0644); err != nil {
+			logError(r.Context(), "Failed to write caption file", err, slog.String("path", textFilePath))
+			continue
+		}
+
+		exportCount++
+	}
+
+	// Create ZIP archive
+	zipPath := filepath.Join("data", "exports", project.Name+"_image-text-pairs.zip")
+	if err := createZipArchive(exportDir, zipPath); err != nil {
+		http.Error(w, "Failed to create ZIP archive", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to create ZIP archive", err)
+		return
+	}
+
+	// Serve the ZIP file
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_image-text-pairs.zip\"", project.Name))
+
+	http.ServeFile(w, r, zipPath)
+
+	// Clean up temporary files
+	go func() {
+		os.RemoveAll(exportDir)
+		os.Remove(zipPath)
+	}()
+
+	logInfo(r.Context(), "Image-text-pairs export completed",
+		slog.String("project_id", projectID),
+		slog.Int("exported_pairs", exportCount))
+}
+
+// Helper function to convert image to PNG format
+func convertImageToPNG(sourcePath, destPath string) error {
+	// Open source image
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to open source image: %v", err)
+	}
+	defer sourceFile.Close()
+
+	// Decode image (supports JPEG, PNG, WebP)
+	img, _, err := image.Decode(sourceFile)
+	if err != nil {
+		return fmt.Errorf("failed to decode image: %v", err)
+	}
+
+	// Create destination file
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %v", err)
+	}
+	defer destFile.Close()
+
+	// Encode as PNG
+	if err := png.Encode(destFile, img); err != nil {
+		return fmt.Errorf("failed to encode PNG: %v", err)
+	}
+
+	return nil
+}
+
 // Helper function to copy files
 func copyFile(src, dst string) error {
 	source, err := os.Open(src)
@@ -1852,6 +2011,10 @@ func main() {
 		}
 		if strings.HasSuffix(r.URL.Path, "/export/ai-toolkit") && r.Method == http.MethodGet {
 			exportAIToolkitHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/export/image-text-pairs") && r.Method == http.MethodGet {
+			exportImageTextPairsHandler(w, r)
 			return
 		}
 		switch r.Method {
