@@ -134,7 +134,7 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
       }
     } catch (error) {
       console.error('Error generating auto-caption:', error)
-      alert('Failed to generate caption automatically')
+      alert(`Failed to generate caption automatically: ${error}`)
     } finally {
       setAutoCaptioning(false)
     }

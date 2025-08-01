@@ -28,7 +28,7 @@ type GeminiContent struct {
 }
 
 type GeminiPart struct {
-	Text       string             `json:"text,omitempty"`
+	Text       string            `json:"text,omitempty"`
 	InlineData *GeminiInlineData `json:"inlineData,omitempty"`
 }
 
@@ -100,7 +100,7 @@ func (g *GeminiService) GenerateCaption(imageBase64 string, systemPrompt string)
 	}
 
 	// Gemini Vision API endpoint
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", g.APIKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=%s", g.APIKey)
 
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(requestBody))
 	if err != nil {
@@ -222,6 +222,7 @@ func GenerateCaptionForTask(projectID, taskID string) (*CaptionResponse, error) 
 	// Generate caption
 	caption, err := captioningService.GenerateCaption(imageBase64, systemPrompt)
 	if err != nil {
+		logger.Error("Failed to generate caption", "error", err)
 		return &CaptionResponse{Error: fmt.Sprintf("Failed to generate caption: %v", err)}, nil
 	}
 
