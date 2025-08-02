@@ -720,6 +720,7 @@ func generateCaptionTasksForProject(projectID string) (*TaskGenerationResponse, 
 			ProjectID: projectID,
 			ImageID:   img.ID,
 			Caption:   sql.NullString{}, // Will be set during annotation
+			Status:    "pending",
 			Skipped:   false,
 		}
 
@@ -1938,6 +1939,229 @@ func autoCaptionTaskHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func startAutoCaptioningHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/auto-caption-batch")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse request body
+	var req AutoCaptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Use defaults if parsing fails
+		req.Config = AutoCaptionConfig{
+			RPM:             30,  // 30 requests per minute
+			MaxRetries:      3,
+			RetryDelayMs:    1000,
+			ConcurrentTasks: 1,
+		}
+	}
+
+	// Validate config
+	if req.Config.RPM <= 0 {
+		req.Config.RPM = 30
+	}
+	if req.Config.MaxRetries <= 0 {
+		req.Config.MaxRetries = 3
+	}
+	if req.Config.RetryDelayMs <= 0 {
+		req.Config.RetryDelayMs = 1000
+	}
+
+	// Start auto captioning
+	err := autoCaptionManager.StartAutoCaptioning(projectID, req.Config)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		logError(r.Context(), "Failed to start auto captioning", err, slog.String("project_id", projectID))
+		return
+	}
+
+	logInfo(r.Context(), "Started auto captioning",
+		slog.String("project_id", projectID),
+		slog.Int("rpm", req.Config.RPM),
+		slog.Int("max_retries", req.Config.MaxRetries),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Auto captioning started",
+		"config":  req.Config,
+	})
+}
+
+func cancelAutoCaptioningHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/auto-caption-cancel")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	err := autoCaptionManager.CancelAutoCaptioning(projectID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		logError(r.Context(), "Failed to cancel auto captioning", err, slog.String("project_id", projectID))
+		return
+	}
+
+	logInfo(r.Context(), "Cancelled auto captioning", slog.String("project_id", projectID))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Auto captioning cancelled",
+	})
+}
+
+func getAutoCaptionStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/auto-caption-status")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	status, err := autoCaptionManager.GetAutoCaptionStatus(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get auto caption status", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get auto caption status", err, slog.String("project_id", projectID))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+func autoCaptionProgressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := r.URL.Query().Get("projectId")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Set headers for SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Create progress channel for this client
+	progressCh := make(chan AutoCaptionProgress, 100)
+	autoCaptionManager.AddProgressClient(projectID, progressCh)
+
+	// Clean up when client disconnects
+	defer func() {
+		autoCaptionManager.RemoveProgressClient(projectID)
+	}()
+
+	// Send events to client
+	for {
+		select {
+		case update := <-progressCh:
+			data, _ := json.Marshal(update)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			w.(http.Flusher).Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func approveCaptionTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/caption-tasks/"), "/approve")
+	if taskID == "" {
+		http.Error(w, "Caption task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get existing task
+	task, err := getCaptionTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption task for approval", err, slog.String("task_id", taskID))
+		return
+	}
+	if task == nil {
+		http.Error(w, "Caption task not found", http.StatusNotFound)
+		return
+	}
+
+	// Update status to reviewed/completed
+	task.Status = "completed"
+	if err := updateCaptionTask(task); err != nil {
+		http.Error(w, "Failed to approve caption", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to approve caption task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	logInfo(r.Context(), "Caption task approved", slog.String("task_id", taskID))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
+func rejectCaptionTaskHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/caption-tasks/"), "/reject")
+	if taskID == "" {
+		http.Error(w, "Caption task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get existing task
+	task, err := getCaptionTask(taskID)
+	if err != nil {
+		http.Error(w, "Failed to get caption task", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to get caption task for rejection", err, slog.String("task_id", taskID))
+		return
+	}
+	if task == nil {
+		http.Error(w, "Caption task not found", http.StatusNotFound)
+		return
+	}
+
+	// Reset to pending status and clear caption
+	task.Status = "pending"
+	task.Caption = sql.NullString{Valid: false}
+	if err := updateCaptionTask(task); err != nil {
+		http.Error(w, "Failed to reject caption", http.StatusInternalServerError)
+		logError(r.Context(), "Failed to reject caption task", err, slog.String("task_id", taskID))
+		return
+	}
+
+	logInfo(r.Context(), "Caption task rejected", slog.String("task_id", taskID))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(task)
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins for now
@@ -2017,6 +2241,18 @@ func main() {
 			exportImageTextPairsHandler(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/auto-caption-batch") && r.Method == http.MethodPost {
+			startAutoCaptioningHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/auto-caption-cancel") && r.Method == http.MethodPost {
+			cancelAutoCaptioningHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/auto-caption-status") && r.Method == http.MethodGet {
+			getAutoCaptionStatusHandler(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getProjectHandler(w, r)
@@ -2046,6 +2282,14 @@ func main() {
 			autoCaptionTaskHandler(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/approve") && r.Method == "PUT" {
+			approveCaptionTaskHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/reject") && r.Method == "PUT" {
+			rejectCaptionTaskHandler(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getCaptionTaskHandler(w, r)
@@ -2055,6 +2299,7 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+	mux.HandleFunc("/auto-caption-progress", autoCaptionProgressHandler)
 
 	logger.Info("Server starting", "port", 8080)
 	if err := http.ListenAndServe(":8080", loggingMiddleware(corsMiddleware(mux))); err != nil {

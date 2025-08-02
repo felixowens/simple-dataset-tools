@@ -77,6 +77,7 @@ func runMigrations() error {
 		{4, addParentProjectIdToProjects},
 		{5, addProjectTypeSupport},
 		{6, addCaptionAPISupport},
+		{7, addAutoCaptionSupport},
 	}
 
 	for _, m := range migrations {
@@ -226,8 +227,8 @@ func createProject(project *Project) error {
 		return fmt.Errorf("failed to marshal prompt buttons: %v", err)
 	}
 	_, err = db.Exec(
-		"INSERT INTO projects (id, name, version, prompt_buttons, parent_project_id, project_type, caption_api, system_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		project.ID, project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.CaptionAPI, project.SystemPrompt,
+		"INSERT INTO projects (id, name, version, prompt_buttons, parent_project_id, project_type, caption_api, system_prompt, auto_caption_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		project.ID, project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.CaptionAPI, project.SystemPrompt, project.AutoCaptionConfig,
 	)
 	return err
 }
@@ -236,8 +237,8 @@ func getProject(id string) (*Project, error) {
 	var project Project
 	var promptButtonsJSON string
 	err := db.QueryRow(
-		"SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit'), caption_api, system_prompt FROM projects WHERE id = ?", id,
-	).Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType, &project.CaptionAPI, &project.SystemPrompt)
+		"SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit'), caption_api, system_prompt, auto_caption_config FROM projects WHERE id = ?", id,
+	).Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType, &project.CaptionAPI, &project.SystemPrompt, &project.AutoCaptionConfig)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -254,7 +255,7 @@ func getProject(id string) (*Project, error) {
 }
 
 func listProjects() ([]Project, error) {
-	rows, err := db.Query("SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit'), caption_api, system_prompt FROM projects ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, name, version, COALESCE(prompt_buttons, '[]'), parent_project_id, COALESCE(project_type, 'edit'), caption_api, system_prompt, auto_caption_config FROM projects ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +265,7 @@ func listProjects() ([]Project, error) {
 	for rows.Next() {
 		var project Project
 		var promptButtonsJSON string
-		if err := rows.Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType, &project.CaptionAPI, &project.SystemPrompt); err != nil {
+		if err := rows.Scan(&project.ID, &project.Name, &project.Version, &promptButtonsJSON, &project.ParentProjectID, &project.ProjectType, &project.CaptionAPI, &project.SystemPrompt, &project.AutoCaptionConfig); err != nil {
 			return nil, err
 		}
 		
@@ -284,8 +285,8 @@ func updateProject(project *Project) error {
 		return fmt.Errorf("failed to marshal prompt buttons: %v", err)
 	}
 	_, err = db.Exec(
-		"UPDATE projects SET name = ?, version = ?, prompt_buttons = ?, parent_project_id = ?, project_type = ?, caption_api = ?, system_prompt = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.CaptionAPI, project.SystemPrompt, project.ID,
+		"UPDATE projects SET name = ?, version = ?, prompt_buttons = ?, parent_project_id = ?, project_type = ?, caption_api = ?, system_prompt = ?, auto_caption_config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		project.Name, project.Version, string(promptButtonsJSON), project.ParentProjectID, project.ProjectType, project.CaptionAPI, project.SystemPrompt, project.AutoCaptionConfig, project.ID,
 	)
 	return err
 }
@@ -544,8 +545,8 @@ func getTask(id string) (*Task, error) {
 // Caption Task database operations
 func createCaptionTask(task *CaptionTask) error {
 	_, err := db.Exec(
-		"INSERT INTO caption_tasks (id, project_id, image_id, caption, skipped) VALUES (?, ?, ?, ?, ?)",
-		task.ID, task.ProjectID, task.ImageID, task.Caption, task.Skipped,
+		"INSERT INTO caption_tasks (id, project_id, image_id, caption, status, skipped) VALUES (?, ?, ?, ?, ?, ?)",
+		task.ID, task.ProjectID, task.ImageID, task.Caption, task.Status, task.Skipped,
 	)
 	return err
 }
@@ -561,14 +562,14 @@ func createCaptionTasks(tasks []CaptionTask) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("INSERT INTO caption_tasks (id, project_id, image_id, caption, skipped) VALUES (?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO caption_tasks (id, project_id, image_id, caption, status, skipped) VALUES (?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, task := range tasks {
-		if _, err := stmt.Exec(task.ID, task.ProjectID, task.ImageID, task.Caption, task.Skipped); err != nil {
+		if _, err := stmt.Exec(task.ID, task.ProjectID, task.ImageID, task.Caption, task.Status, task.Skipped); err != nil {
 			return err
 		}
 	}
@@ -578,7 +579,7 @@ func createCaptionTasks(tasks []CaptionTask) error {
 
 func getCaptionTasksByProjectID(projectID string) ([]CaptionTask, error) {
 	rows, err := db.Query(`
-		SELECT id, project_id, image_id, caption, skipped 
+		SELECT id, project_id, image_id, caption, status, skipped 
 		FROM caption_tasks 
 		WHERE project_id = ? 
 		ORDER BY created_at
@@ -591,7 +592,7 @@ func getCaptionTasksByProjectID(projectID string) ([]CaptionTask, error) {
 	var tasks []CaptionTask
 	for rows.Next() {
 		var task CaptionTask
-		if err := rows.Scan(&task.ID, &task.ProjectID, &task.ImageID, &task.Caption, &task.Skipped); err != nil {
+		if err := rows.Scan(&task.ID, &task.ProjectID, &task.ImageID, &task.Caption, &task.Status, &task.Skipped); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, task)
@@ -603,10 +604,10 @@ func getCaptionTasksByProjectID(projectID string) ([]CaptionTask, error) {
 func getCaptionTask(id string) (*CaptionTask, error) {
 	var task CaptionTask
 	err := db.QueryRow(`
-		SELECT id, project_id, image_id, caption, skipped 
+		SELECT id, project_id, image_id, caption, status, skipped 
 		FROM caption_tasks 
 		WHERE id = ?
-	`, id).Scan(&task.ID, &task.ProjectID, &task.ImageID, &task.Caption, &task.Skipped)
+	`, id).Scan(&task.ID, &task.ProjectID, &task.ImageID, &task.Caption, &task.Status, &task.Skipped)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -620,8 +621,8 @@ func getCaptionTask(id string) (*CaptionTask, error) {
 
 func updateCaptionTask(task *CaptionTask) error {
 	_, err := db.Exec(
-		"UPDATE caption_tasks SET caption = ?, skipped = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		task.Caption, task.Skipped, task.ID,
+		"UPDATE caption_tasks SET caption = ?, status = ?, skipped = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		task.Caption, task.Status, task.Skipped, task.ID,
 	)
 	return err
 }
@@ -636,6 +637,23 @@ func captionTaskExistsForImage(projectID, imageID string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func addAutoCaptionSupport() error {
+	queries := []string{
+		// Add auto_caption_config column to projects table
+		`ALTER TABLE projects ADD COLUMN auto_caption_config TEXT`,
+		// Add status column to caption_tasks table  
+		`ALTER TABLE caption_tasks ADD COLUMN status TEXT DEFAULT 'pending'`,
+		// Update existing tasks to have 'completed' status if they have a caption
+		`UPDATE caption_tasks SET status = 'completed' WHERE caption IS NOT NULL AND caption != ''`,
+	}
+	for _, query := range queries {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("failed to execute query: %s - %v", query, err)
+		}
+	}
+	return nil
 }
 
 func closeDatabase() error {

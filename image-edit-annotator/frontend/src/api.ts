@@ -18,6 +18,7 @@ export interface Project {
   projectType: 'edit' | 'caption';
   captionApi?: string | null;
   systemPrompt?: string | null;
+  autoCaptionConfig?: string | null;
 }
 
 export interface ProjectWithStats {
@@ -33,6 +34,7 @@ export interface ProjectWithStats {
   projectType: 'edit' | 'caption';
   captionApi?: string | null;
   systemPrompt?: string | null;
+  autoCaptionConfig?: string | null;
 }
 
 export const createProject = (project: Omit<Project, 'id'>) => api.post<Project>('/projects', project);
@@ -93,6 +95,7 @@ export interface CaptionTask {
   projectId: string;
   imageId: string;
   caption: { String: string; Valid: boolean } | null;
+  status: 'pending' | 'auto_generated' | 'reviewed' | 'completed';
   skipped: boolean;
 }
 
@@ -137,5 +140,53 @@ export interface AutoCaptionResponse {
   error?: string;
 }
 
+export interface AutoCaptionConfig {
+  rpm: number;
+  maxRetries: number;
+  retryDelayMs: number;
+  concurrentTasks: number;
+}
+
+export interface AutoCaptionProgress {
+  projectId: string;
+  status: 'running' | 'completed' | 'cancelled' | 'error';
+  total: number;
+  processed: number;
+  successful: number;
+  failed: number;
+  currentTask?: string;
+  errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface AutoCaptionRequest {
+  config: AutoCaptionConfig;
+}
+
+export interface AutoCaptionStatusResponse {
+  progress?: AutoCaptionProgress;
+  isActive: boolean;
+}
+
 export const autoCaptionTask = (taskId: string) => 
   api.post<AutoCaptionResponse>(`/caption-tasks/${taskId}/auto-caption`);
+
+export const startAutoCaptioning = (projectId: string, config: AutoCaptionConfig) =>
+  api.post<{ message: string; config: AutoCaptionConfig }>(`/projects/${projectId}/auto-caption-batch`, { config });
+
+export const cancelAutoCaptioning = (projectId: string) =>
+  api.post<{ message: string }>(`/projects/${projectId}/auto-caption-cancel`);
+
+export const getAutoCaptionStatus = (projectId: string) =>
+  api.get<AutoCaptionStatusResponse>(`/projects/${projectId}/auto-caption-status`);
+
+export const createAutoCaptionProgressEventSource = (projectId: string) => {
+  return new EventSource(`${API_BASE_URL}/auto-caption-progress?projectId=${projectId}`);
+};
+
+export const approveCaptionTask = (taskId: string) =>
+  api.put<CaptionTask>(`/caption-tasks/${taskId}/approve`);
+
+export const rejectCaptionTask = (taskId: string) =>
+  api.put<CaptionTask>(`/caption-tasks/${taskId}/reject`);

@@ -226,5 +226,15 @@ func GenerateCaptionForTask(projectID, taskID string) (*CaptionResponse, error) 
 		return &CaptionResponse{Error: fmt.Sprintf("Failed to generate caption: %v", err)}, nil
 	}
 
+	// Update the task with the generated caption and set status to auto_generated
+	task.Caption.String = caption
+	task.Caption.Valid = true
+	task.Status = "auto_generated"
+	
+	if err := updateCaptionTask(task); err != nil {
+		logger.Error("Failed to update caption task with generated caption", "error", err)
+		return &CaptionResponse{Error: fmt.Sprintf("Failed to save generated caption: %v", err)}, nil
+	}
+
 	return &CaptionResponse{Caption: caption}, nil
 }

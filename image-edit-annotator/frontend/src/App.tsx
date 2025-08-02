@@ -60,7 +60,7 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, getCaptionTasks, updateCaptionTask, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type CaptionTask, type ForkProjectRequest } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, getCaptionTasks, updateCaptionTask, startAutoCaptioning, cancelAutoCaptioning, getAutoCaptionStatus, createAutoCaptionProgressEventSource, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type CaptionTask, type ForkProjectRequest, type AutoCaptionConfig, type AutoCaptionStatusResponse, type AutoCaptionProgress } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
 import { CaptionAnnotationWizard } from './components/CaptionAnnotationWizard'
@@ -473,6 +473,8 @@ function ProjectPage() {
   const [newPromptButton, setNewPromptButton] = useState('')
   const [promptButtonsExpanded, setPromptButtonsExpanded] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [autoCaptionStatus, setAutoCaptionStatus] = useState<AutoCaptionStatusResponse | null>(null)
+  const [autoCaptionProgress, setAutoCaptionProgress] = useState<AutoCaptionProgress | null>(null)
 
   const fetchImages = async () => {
     if (!projectId) return
@@ -529,6 +531,9 @@ function ProjectPage() {
     if (pageState.status === 'success') {
       fetchImages()
       fetchTasks()
+      if (pageState.project.projectType === 'caption') {
+        fetchAutoCaptionStatus()
+      }
     }
   }, [pageState.status, projectId])
 
@@ -656,6 +661,76 @@ function ProjectPage() {
       status: 'success',
       project: updatedProject
     })
+  }
+
+  const fetchAutoCaptionStatus = async () => {
+    if (!projectId) return
+    try {
+      const response = await getAutoCaptionStatus(projectId)
+      setAutoCaptionStatus(response.data)
+    } catch (error) {
+      console.error('Error fetching auto caption status:', error)
+    }
+  }
+
+  const handleStartAutoCaption = async () => {
+    if (!projectId || pageState.status !== 'success') return
+    
+    // Get auto caption config from project or use defaults
+    let config: AutoCaptionConfig = {
+      rpm: 30,
+      maxRetries: 3,
+      retryDelayMs: 1000,
+      concurrentTasks: 1
+    }
+
+    if (pageState.project.autoCaptionConfig) {
+      try {
+        config = JSON.parse(pageState.project.autoCaptionConfig)
+      } catch (error) {
+        console.error('Failed to parse auto caption config, using defaults:', error)
+      }
+    }
+
+    try {
+      await startAutoCaptioning(projectId, config)
+      fetchAutoCaptionStatus()
+      
+      // Start listening for progress updates
+      const eventSource = createAutoCaptionProgressEventSource(projectId)
+      eventSource.onmessage = (event) => {
+        const progress: AutoCaptionProgress = JSON.parse(event.data)
+        setAutoCaptionProgress(progress)
+        
+        // If completed or error, close the event source and refresh tasks
+        if (progress.status === 'completed' || progress.status === 'error' || progress.status === 'cancelled') {
+          eventSource.close()
+          fetchAutoCaptionStatus()
+          fetchTasks()
+        }
+      }
+      
+      eventSource.onerror = () => {
+        eventSource.close()
+        fetchAutoCaptionStatus()
+      }
+    } catch (error) {
+      console.error('Error starting auto captioning:', error)
+      alert('Failed to start auto captioning. Please check your API configuration.')
+    }
+  }
+
+  const handleCancelAutoCaption = async () => {
+    if (!projectId) return
+    try {
+      await cancelAutoCaptioning(projectId)
+      setAutoCaptionStatus(null)
+      setAutoCaptionProgress(null)
+      fetchAutoCaptionStatus()
+    } catch (error) {
+      console.error('Error cancelling auto captioning:', error)
+      alert('Failed to cancel auto captioning.')
+    }
   }
 
   switch (pageState.status) {
@@ -893,9 +968,15 @@ function ProjectPage() {
                     </div>
                     <div className="text-center">
                       <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-                        {captionTasks.filter(t => t.caption?.Valid && !t.skipped).length}
+                        {captionTasks.filter(t => t.status === 'completed' && !t.skipped).length}
                       </div>
                       <div className="text-sm text-gray-600 dark:text-gray-400">Completed</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                        {captionTasks.filter(t => t.status === 'auto_generated' && !t.skipped).length}
+                      </div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">Auto Generated</div>
                     </div>
                     <div className="text-center">
                       <div className="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
@@ -905,7 +986,7 @@ function ProjectPage() {
                     </div>
                     <div className="text-center">
                       <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
-                        {captionTasks.filter(t => !t.caption?.Valid && !t.skipped).length}
+                        {captionTasks.filter(t => t.status === 'pending' && !t.skipped).length}
                       </div>
                       <div className="text-sm text-gray-600 dark:text-gray-400">Pending</div>
                     </div>
@@ -931,9 +1012,13 @@ function ProjectPage() {
                   >
                     {(() => {
                       if (project.projectType === 'caption') {
-                        const pendingTasks = captionTasks.filter(t => !t.caption?.Valid && !t.skipped).length
-                        const completedTasks = captionTasks.filter(t => t.caption?.Valid && !t.skipped).length
-                        if (pendingTasks === 0 && completedTasks > 0) {
+                        const pendingTasks = captionTasks.filter(t => t.status === 'pending' && !t.skipped).length
+                        const completedTasks = captionTasks.filter(t => t.status === 'completed' && !t.skipped).length
+                        const autoGeneratedTasks = captionTasks.filter(t => t.status === 'auto_generated' && !t.skipped).length
+                        
+                        if (autoGeneratedTasks > 0) {
+                          return 'Review Auto Captions'
+                        } else if (pendingTasks === 0 && completedTasks > 0) {
                           return 'Review Captions'
                         } else if (completedTasks > 0) {
                           return 'Resume Captioning'
@@ -953,6 +1038,28 @@ function ProjectPage() {
                       }
                     })()}
                   </Link>
+
+                  {/* Auto Caption Button for caption projects */}
+                  {project.projectType === 'caption' && project.captionApi && (
+                    <>
+                      {autoCaptionStatus?.isActive ? (
+                        <button
+                          onClick={handleCancelAutoCaption}
+                          className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                        >
+                          Cancel Auto Caption
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleStartAutoCaption}
+                          disabled={captionTasks.filter(t => t.status === 'pending' && !t.skipped).length === 0}
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          Auto Caption Remaining ({captionTasks.filter(t => t.status === 'pending' && !t.skipped).length})
+                        </button>
+                      )}
+                    </>
+                  )}
 
                   {/* Re-queue Skipped Button */}
                   {((project.projectType === 'caption' && captionTasks.filter(t => t.skipped).length > 0) ||
@@ -993,6 +1100,55 @@ function ProjectPage() {
                   <div className="text-green-300 text-sm space-y-1">
                     <p>Tasks Created: {taskGeneration.result.tasksCreated}</p>
                     <p>Average Candidates per Task: {taskGeneration.result.averageCandidates.toFixed(1)}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Auto Caption Progress */}
+              {project.projectType === 'caption' && autoCaptionProgress && (
+                <div className="mt-4 p-3 bg-blue-900/30 border border-blue-600/30 rounded">
+                  <h4 className="text-blue-400 font-medium mb-2">Auto Captioning Progress</h4>
+                  <div className="text-blue-300 text-sm space-y-2">
+                    <div className="flex justify-between">
+                      <span>Status:</span>
+                      <span className={`capitalize font-medium ${
+                        autoCaptionProgress.status === 'running' ? 'text-yellow-400' :
+                        autoCaptionProgress.status === 'completed' ? 'text-green-400' :
+                        autoCaptionProgress.status === 'error' ? 'text-red-400' :
+                        'text-gray-400'
+                      }`}>
+                        {autoCaptionProgress.status}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Progress:</span>
+                      <span>{autoCaptionProgress.processed} / {autoCaptionProgress.total}</span>
+                    </div>
+                    <div className="w-full bg-gray-600 rounded-full h-2">
+                      <div
+                        className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${(autoCaptionProgress.processed / autoCaptionProgress.total) * 100}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Successful:</span>
+                      <span className="text-green-400">{autoCaptionProgress.successful}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Failed:</span>
+                      <span className="text-red-400">{autoCaptionProgress.failed}</span>
+                    </div>
+                    {autoCaptionProgress.currentTask && (
+                      <div className="flex justify-between">
+                        <span>Current:</span>
+                        <span className="font-mono text-xs">{autoCaptionProgress.currentTask.substring(0, 12)}...</span>
+                      </div>
+                    )}
+                    {autoCaptionProgress.errorMessage && (
+                      <div className="text-red-400 text-xs">
+                        Error: {autoCaptionProgress.errorMessage}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1128,36 +1284,45 @@ function ProjectPage() {
                 <div className="max-h-64 overflow-y-auto">
                   {project.projectType === 'caption' ? (
                     captionTasks.map((task, index) => {
-                      const isCompleted = task.caption?.Valid && !task.skipped
+                      const isCompleted = task.status === 'completed' && !task.skipped
+                      const isAutoGenerated = task.status === 'auto_generated' && !task.skipped
                       const isSkipped = task.skipped
 
                       return (
                         <div
                           key={task.id}
-                          className={`flex items-center justify-between p-3 border-b border-gray-600 last:border-b-0 ${isCompleted ? 'bg-green-900/20' :
+                          className={`flex items-center justify-between p-3 border-b border-gray-600 last:border-b-0 ${
+                            isCompleted ? 'bg-green-900/20' :
+                            isAutoGenerated ? 'bg-blue-900/20' :
                             isSkipped ? 'bg-yellow-900/20' :
-                              'bg-gray-800/50'
-                            }`}
+                            'bg-gray-800/50'
+                          }`}
                         >
                           <div className="flex items-center space-x-3">
                             <div className="text-sm font-mono text-gray-400">
                               #{index + 1}
                             </div>
-                            <div className={`w-3 h-3 rounded-full ${isCompleted ? 'bg-green-500' :
+                            <div className={`w-3 h-3 rounded-full ${
+                              isCompleted ? 'bg-green-500' :
+                              isAutoGenerated ? 'bg-blue-500' :
                               isSkipped ? 'bg-yellow-500' :
-                                'bg-gray-500'
-                              }`} />
+                              'bg-gray-500'
+                            }`} />
                             <div className="text-sm text-white">
                               Caption {task.id.substring(0, 8)}...
                             </div>
                           </div>
 
                           <div className="flex items-center space-x-2">
-                            <div className={`px-2 py-1 rounded text-xs font-medium ${isCompleted ? 'bg-green-600 text-white' :
+                            <div className={`px-2 py-1 rounded text-xs font-medium ${
+                              isCompleted ? 'bg-green-600 text-white' :
+                              isAutoGenerated ? 'bg-blue-600 text-white' :
                               isSkipped ? 'bg-yellow-600 text-white' :
-                                'bg-gray-600 text-gray-300'
-                              }`}>
-                              {isCompleted ? 'Completed' : isSkipped ? 'Skipped' : 'Pending'}
+                              'bg-gray-600 text-gray-300'
+                            }`}>
+                              {isCompleted ? 'Completed' : 
+                               isAutoGenerated ? 'Auto Generated' :
+                               isSkipped ? 'Skipped' : 'Pending'}
                             </div>
                           </div>
                         </div>

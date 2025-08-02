@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getCaptionTasks, getImages, updateCaptionTask, getProject, autoCaptionTask, type CaptionTask, type Image, type Project } from '../api'
+import { getCaptionTasks, getImages, updateCaptionTask, getProject, autoCaptionTask, approveCaptionTask, rejectCaptionTask, type CaptionTask, type Image, type Project } from '../api'
 
 interface CaptionAnnotationWizardProps {
   projectId: string
@@ -42,14 +42,22 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
       setImages(imagesResponse.data)
       setProject(projectResponse.data)
 
-      // Find first incomplete task (resume functionality)
-      const firstIncomplete = tasksResponse.data.findIndex(t =>
-        !t.caption?.Valid && !t.skipped
+      // Find first task that needs attention (resume functionality)
+      // Priority: auto_generated > pending > completed for review
+      let firstNeedsAttention = tasksResponse.data.findIndex(t =>
+        t.status === 'auto_generated' && !t.skipped
       )
-      if (firstIncomplete >= 0) {
-        setCurrentTaskIndex(firstIncomplete)
+      
+      if (firstNeedsAttention === -1) {
+        firstNeedsAttention = tasksResponse.data.findIndex(t =>
+          t.status === 'pending' && !t.skipped
+        )
+      }
+      
+      if (firstNeedsAttention >= 0) {
+        setCurrentTaskIndex(firstNeedsAttention)
       } else {
-        // If no incomplete tasks, start from beginning for review
+        // If no tasks need attention, start from beginning for review
         setCurrentTaskIndex(0)
       }
     } catch (error) {
@@ -74,6 +82,7 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
     try {
       await updateCaptionTask(currentTask.id, {
         caption: { String: caption.trim(), Valid: true },
+        status: 'completed',
         skipped: false
       })
 
@@ -81,7 +90,8 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
       const updatedTasks = [...tasks]
       updatedTasks[currentTaskIndex] = {
         ...currentTask,
-        caption: { String: caption.trim(), Valid: true }
+        caption: { String: caption.trim(), Valid: true },
+        status: 'completed'
       }
       setTasks(updatedTasks)
 
@@ -140,13 +150,77 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
     }
   }
 
+  const handleApprove = async () => {
+    if (!currentTask) return
+
+    setSaving(true)
+    try {
+      await approveCaptionTask(currentTask.id)
+
+      // Update local task state
+      const updatedTasks = [...tasks]
+      updatedTasks[currentTaskIndex] = {
+        ...currentTask,
+        status: 'completed'
+      }
+      setTasks(updatedTasks)
+
+      goToNextTask()
+    } catch (error) {
+      console.error('Error approving caption:', error)
+      alert('Failed to approve caption')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleReject = async () => {
+    if (!currentTask) return
+
+    setSaving(true)
+    try {
+      await rejectCaptionTask(currentTask.id)
+
+      // Update local task state
+      const updatedTasks = [...tasks]
+      updatedTasks[currentTaskIndex] = {
+        ...currentTask,
+        caption: { String: '', Valid: false },
+        status: 'pending'
+      }
+      setTasks(updatedTasks)
+      setCaption('')
+
+      // Don't move to next task - stay here to redo this caption
+    } catch (error) {
+      console.error('Error rejecting caption:', error)
+      alert('Failed to reject caption')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const goToNextTask = () => {
-    const nextIncompleteIndex = tasks.findIndex((t, idx) =>
-      idx > currentTaskIndex && !t.caption?.Valid && !t.skipped
+    // Priority order: auto_generated > pending > any
+    let nextTaskIndex = tasks.findIndex((t, idx) =>
+      idx > currentTaskIndex && t.status === 'auto_generated' && !t.skipped
     )
 
-    if (nextIncompleteIndex >= 0) {
-      setCurrentTaskIndex(nextIncompleteIndex)
+    if (nextTaskIndex === -1) {
+      nextTaskIndex = tasks.findIndex((t, idx) =>
+        idx > currentTaskIndex && t.status === 'pending' && !t.skipped
+      )
+    }
+
+    if (nextTaskIndex === -1) {
+      // Look for any remaining task that's not completed
+      nextTaskIndex = tasks.findIndex((t, idx) =>
+        idx > currentTaskIndex && t.status !== 'completed' && !t.skipped
+      )
+    }
+
+    if (nextTaskIndex >= 0) {
+      setCurrentTaskIndex(nextTaskIndex)
     } else {
       // All tasks completed
       navigate(`/projects/${projectId}`)
@@ -229,9 +303,10 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
             <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-3">Progress</h3>
             <div className="space-y-3">
               {(() => {
-                const completedCount = tasks.filter(t => t.caption?.Valid && !t.skipped).length
+                const completedCount = tasks.filter(t => t.status === 'completed' && !t.skipped).length
+                const autoGeneratedCount = tasks.filter(t => t.status === 'auto_generated' && !t.skipped).length
                 const skippedCount = tasks.filter(t => t.skipped).length
-                const pendingCount = tasks.filter(t => !t.caption?.Valid && !t.skipped).length
+                const pendingCount = tasks.filter(t => t.status === 'pending' && !t.skipped).length
                 
                 return (
                   <>
@@ -240,12 +315,16 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
                       <span className="text-green-600 dark:text-green-400 font-medium">{completedCount}</span>
                     </div>
                     <div className="flex justify-between text-sm">
+                      <span className="text-gray-600 dark:text-gray-400">Auto Generated</span>
+                      <span className="text-blue-600 dark:text-blue-400 font-medium">{autoGeneratedCount}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
                       <span className="text-gray-600 dark:text-gray-400">Skipped</span>
                       <span className="text-yellow-600 dark:text-yellow-400 font-medium">{skippedCount}</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-600 dark:text-gray-400">Pending</span>
-                      <span className="text-blue-600 dark:text-blue-400 font-medium">{pendingCount}</span>
+                      <span className="text-purple-600 dark:text-purple-400 font-medium">{pendingCount}</span>
                     </div>
                     <div className="mt-3">
                       <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
@@ -271,18 +350,25 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
             <div className="space-y-2">
               <button
                 onClick={() => {
-                  const nextIncomplete = tasks.findIndex((t, idx) =>
-                    idx > currentTaskIndex && !t.caption?.Valid && !t.skipped
+                  // Find next auto_generated task first
+                  let nextTask = tasks.findIndex((t, idx) =>
+                    idx > currentTaskIndex && t.status === 'auto_generated' && !t.skipped
                   )
-                  if (nextIncomplete >= 0) {
-                    setCurrentTaskIndex(nextIncomplete)
-                  } else {
-                    // Wrap around to first incomplete
-                    const firstIncomplete = tasks.findIndex(t =>
-                      !t.caption?.Valid && !t.skipped
+                  if (nextTask === -1) {
+                    // Then find next pending task
+                    nextTask = tasks.findIndex((t, idx) =>
+                      idx > currentTaskIndex && t.status === 'pending' && !t.skipped
                     )
-                    if (firstIncomplete >= 0) {
-                      setCurrentTaskIndex(firstIncomplete)
+                  }
+                  if (nextTask >= 0) {
+                    setCurrentTaskIndex(nextTask)
+                  } else {
+                    // Wrap around to first task needing attention
+                    const firstNeedsAttention = tasks.findIndex(t =>
+                      (t.status === 'auto_generated' || t.status === 'pending') && !t.skipped
+                    )
+                    if (firstNeedsAttention >= 0) {
+                      setCurrentTaskIndex(firstNeedsAttention)
                     }
                   }
                 }}
@@ -293,11 +379,18 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
 
               <button
                 onClick={() => {
-                  const firstIncomplete = tasks.findIndex(t =>
-                    !t.caption?.Valid && !t.skipped
+                  // First look for auto_generated tasks
+                  let firstNeedsAttention = tasks.findIndex(t =>
+                    t.status === 'auto_generated' && !t.skipped
                   )
-                  if (firstIncomplete >= 0) {
-                    setCurrentTaskIndex(firstIncomplete)
+                  if (firstNeedsAttention === -1) {
+                    // Then look for pending tasks
+                    firstNeedsAttention = tasks.findIndex(t =>
+                      t.status === 'pending' && !t.skipped
+                    )
+                  }
+                  if (firstNeedsAttention >= 0) {
+                    setCurrentTaskIndex(firstNeedsAttention)
                   } else {
                     setCurrentTaskIndex(0)
                   }
@@ -314,7 +407,8 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
             <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-3">All Tasks</h3>
             <div className="space-y-1 max-h-64 overflow-y-auto">
               {tasks.map((task, index) => {
-                const isCompleted = task.caption?.Valid && !task.skipped
+                const isCompleted = task.status === 'completed' && !task.skipped
+                const isAutoGenerated = task.status === 'auto_generated' && !task.skipped
                 const isSkipped = task.skipped
                 const isCurrent = index === currentTaskIndex
 
@@ -323,6 +417,7 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
                     key={task.id}
                     className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors ${isCurrent ? 'bg-blue-600 text-white' :
                       isCompleted ? 'bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/30' :
+                        isAutoGenerated ? 'bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30' :
                         isSkipped ? 'bg-yellow-50 dark:bg-yellow-900/20 hover:bg-yellow-100 dark:hover:bg-yellow-900/30' :
                           'bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-600'
                       }`}
@@ -332,19 +427,25 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
                       <div className={`text-sm font-mono ${isCurrent ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>
                         #{index + 1}
                       </div>
-                      <div className={`w-2 h-2 rounded-full ${isCompleted ? 'bg-green-500' :
+                      <div className={`w-2 h-2 rounded-full ${
+                        isCompleted ? 'bg-green-500' :
+                        isAutoGenerated ? 'bg-blue-500' :
                         isSkipped ? 'bg-yellow-500' :
-                          isCurrent ? 'bg-white' :
-                            'bg-gray-400'
-                        }`} />
+                        isCurrent ? 'bg-white' :
+                        'bg-gray-400'
+                      }`} />
                     </div>
 
-                    <div className={`text-xs px-2 py-1 rounded-full ${isCompleted ? 'bg-green-600 text-white' :
+                    <div className={`text-xs px-2 py-1 rounded-full ${
+                      isCompleted ? 'bg-green-600 text-white' :
+                      isAutoGenerated ? 'bg-blue-600 text-white' :
                       isSkipped ? 'bg-yellow-600 text-white' :
-                        isCurrent ? 'bg-white text-blue-600' :
-                          'bg-gray-500 text-white'
-                      }`}>
-                      {isCompleted ? 'Done' : isSkipped ? 'Skip' : 'Todo'}
+                      isCurrent ? 'bg-white text-blue-600' :
+                      'bg-gray-500 text-white'
+                    }`}>
+                      {isCompleted ? 'Done' : 
+                       isAutoGenerated ? 'Review' :
+                       isSkipped ? 'Skip' : 'Todo'}
                     </div>
                   </div>
                 )
@@ -422,8 +523,10 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
               value={caption}
               onChange={(e) => setCaption(e.target.value)}
               placeholder="Describe what you see in this image..."
-              className="w-full h-24 p-3 bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-400 resize-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              className="w-full p-3 bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-400 resize-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               autoFocus
+              rows={10}
+              
             />
           </div>
 
@@ -445,6 +548,27 @@ export function CaptionAnnotationWizard({ projectId }: CaptionAnnotationWizardPr
                 {autoCaptioning ? 'Generating...' : 'Auto Caption'}
               </button>
             )}
+            
+            {/* Review buttons for auto-generated captions */}
+            {currentTask?.status === 'auto_generated' && (
+              <>
+                <button
+                  onClick={handleReject}
+                  disabled={saving}
+                  className="px-6 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+                >
+                  {saving ? 'Rejecting...' : 'Reject'}
+                </button>
+                <button
+                  onClick={handleApprove}
+                  disabled={saving}
+                  className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                >
+                  {saving ? 'Approving...' : 'Approve'}
+                </button>
+              </>
+            )}
+            
             <button
               onClick={handleSave}
               disabled={saving || autoCaptioning || !caption.trim()}

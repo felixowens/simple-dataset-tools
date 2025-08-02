@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { updateProject, type Project, type CaptionAPIConfig } from '../api'
+import { updateProject, type Project, type CaptionAPIConfig, type AutoCaptionConfig } from '../api'
 
 interface ProjectSettingsModalProps {
   project: Project
@@ -16,7 +16,11 @@ export function ProjectSettingsModal({ project, isOpen, onClose, onProjectUpdate
     systemPrompt: project.systemPrompt || '',
     captionApiProvider: '',
     captionApiKey: '',
-    captionApiModel: ''
+    captionApiModel: '',
+    autoCaptionRpm: 30,
+    autoCaptionMaxRetries: 3,
+    autoCaptionRetryDelayMs: 1000,
+    autoCaptionConcurrentTasks: 1
   })
   const [newPromptButton, setNewPromptButton] = useState('')
   const [saving, setSaving] = useState(false)
@@ -35,9 +39,24 @@ export function ProjectSettingsModal({ project, isOpen, onClose, onProjectUpdate
         console.error('Failed to parse caption API config:', error)
       }
     }
-  }, [project.captionApi])
+    
+    if (project.autoCaptionConfig) {
+      try {
+        const autoCaptionConfig: AutoCaptionConfig = JSON.parse(project.autoCaptionConfig)
+        setFormData(prev => ({
+          ...prev,
+          autoCaptionRpm: autoCaptionConfig.rpm || 30,
+          autoCaptionMaxRetries: autoCaptionConfig.maxRetries || 3,
+          autoCaptionRetryDelayMs: autoCaptionConfig.retryDelayMs || 1000,
+          autoCaptionConcurrentTasks: autoCaptionConfig.concurrentTasks || 1
+        }))
+      } catch (error) {
+        console.error('Failed to parse auto caption config:', error)
+      }
+    }
+  }, [project.captionApi, project.autoCaptionConfig])
 
-  const handleInputChange = (field: string, value: string) => {
+  const handleInputChange = (field: string, value: string | number) => {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
@@ -72,6 +91,18 @@ export function ProjectSettingsModal({ project, isOpen, onClose, onProjectUpdate
         captionApi = JSON.stringify(apiConfig)
       }
 
+      // Prepare auto caption configuration
+      let autoCaptionConfig = null
+      if (project.projectType === 'caption') {
+        const config: AutoCaptionConfig = {
+          rpm: Number(formData.autoCaptionRpm),
+          maxRetries: Number(formData.autoCaptionMaxRetries),
+          retryDelayMs: Number(formData.autoCaptionRetryDelayMs),
+          concurrentTasks: Number(formData.autoCaptionConcurrentTasks)
+        }
+        autoCaptionConfig = JSON.stringify(config)
+      }
+
       const updatedProject: Omit<Project, 'id'> = {
         name: formData.name,
         version: formData.version,
@@ -79,7 +110,8 @@ export function ProjectSettingsModal({ project, isOpen, onClose, onProjectUpdate
         parentProjectId: project.parentProjectId,
         projectType: project.projectType,
         captionApi,
-        systemPrompt: formData.systemPrompt || null
+        systemPrompt: formData.systemPrompt || null,
+        autoCaptionConfig
       }
 
       const response = await updateProject(project.id, updatedProject)
@@ -242,6 +274,99 @@ export function ProjectSettingsModal({ project, isOpen, onClose, onProjectUpdate
                   className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   placeholder="e.g., gemini-1.5-flash (optional)"
                 />
+              </div>
+
+              {/* Auto Caption Configuration */}
+              <div className="space-y-4 border-t border-gray-200 dark:border-gray-600 pt-4">
+                <h4 className="text-md font-medium text-gray-900 dark:text-white">Auto Captioning Settings</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Configure bulk auto captioning behavior when processing multiple images at once.
+                </p>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Requests Per Minute (RPM)
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="300"
+                      value={formData.autoCaptionRpm}
+                      onChange={(e) => handleInputChange('autoCaptionRpm', parseInt(e.target.value) || 30)}
+                      className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Rate limit for API calls (1-300)
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Max Retries
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="10"
+                      value={formData.autoCaptionMaxRetries}
+                      onChange={(e) => handleInputChange('autoCaptionMaxRetries', parseInt(e.target.value) || 3)}
+                      className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Retry attempts on failure (0-10)
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Retry Delay (ms)
+                    </label>
+                    <input
+                      type="number"
+                      min="100"
+                      max="10000"
+                      step="100"
+                      value={formData.autoCaptionRetryDelayMs}
+                      onChange={(e) => handleInputChange('autoCaptionRetryDelayMs', parseInt(e.target.value) || 1000)}
+                      className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Base delay between retries
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Concurrent Tasks
+                    </label>
+                    <input
+                      type="number" 
+                      min="1"
+                      max="5"
+                      value={formData.autoCaptionConcurrentTasks}
+                      onChange={(e) => handleInputChange('autoCaptionConcurrentTasks', parseInt(e.target.value) || 1)}
+                      className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Parallel processing tasks (1-5)
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-lg p-3">
+                  <div className="flex">
+                    <svg className="w-5 h-5 text-yellow-400 mr-2 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    <div>
+                      <h5 className="text-sm font-medium text-yellow-800 dark:text-yellow-200">API Rate Limits</h5>
+                      <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                        Be mindful of your API provider's rate limits. Setting RPM too high may result in API errors or account suspension.
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}
