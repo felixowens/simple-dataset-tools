@@ -190,3 +190,42 @@ export const approveCaptionTask = (taskId: string) =>
 
 export const rejectCaptionTask = (taskId: string) =>
   api.put<CaptionTask>(`/caption-tasks/${taskId}/reject`);
+
+// Export related APIs
+export interface ExportProgress {
+  projectId: string;
+  exportType: string;
+  step: string;
+  progress: number;
+  total: number;
+  status: string;
+  errorMessage?: string;
+  filePath?: string;
+}
+
+export interface ExportStatus {
+  projectId: string;
+  exportType: string;
+  status: string;
+  progress: number;
+  total: number;
+  filePath?: string;
+  error?: string;
+  startTime: string;
+  completedAt?: string;
+}
+
+export const startExport = (projectId: string, exportType: 'ai-toolkit' | 'image-text-pairs') =>
+  api.get<{ message: string; projectId: string; type: string }>(`/projects/${projectId}/export/${exportType}`);
+
+export const getExportStatus = (projectId: string) =>
+  api.get<ExportStatus>(`/projects/${projectId}/export-status`);
+
+export const downloadExport = (projectId: string) => {
+  // Create a direct download link
+  window.location.href = `${API_BASE_URL}/projects/${projectId}/export/download`;
+};
+
+export const createExportProgressEventSource = (projectId: string) => {
+  return new EventSource(`${API_BASE_URL}/export-progress?projectId=${projectId}`);
+};

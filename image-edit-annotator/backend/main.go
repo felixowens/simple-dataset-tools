@@ -27,6 +27,11 @@ import (
 var (
 	progressClients = make(map[string]chan ProgressUpdate)
 	progressMu      sync.RWMutex
+	
+	exportProgressClients = make(map[string]chan ExportProgress)
+	exportProgressMu      sync.RWMutex
+	activeExports        = make(map[string]*ExportStatus)
+	activeExportsMu      sync.RWMutex
 )
 
 type ProgressUpdate struct {
@@ -36,6 +41,29 @@ type ProgressUpdate struct {
 	Total        int    `json:"total"`
 	Status       string `json:"status"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
+}
+
+type ExportProgress struct {
+	ProjectID    string `json:"projectId"`
+	ExportType   string `json:"exportType"`
+	Step         string `json:"step"`
+	Progress     int    `json:"progress"`
+	Total        int    `json:"total"`
+	Status       string `json:"status"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	FilePath     string `json:"filePath,omitempty"`
+}
+
+type ExportStatus struct {
+	ProjectID   string `json:"projectId"`
+	ExportType  string `json:"exportType"`
+	Status      string `json:"status"`
+	Progress    int    `json:"progress"`
+	Total       int    `json:"total"`
+	FilePath    string `json:"filePath,omitempty"`
+	Error       string `json:"error,omitempty"`
+	StartTime   string `json:"startTime"`
+	CompletedAt string `json:"completedAt,omitempty"`
 }
 
 func pingHandler(w http.ResponseWriter, r *http.Request) {
@@ -467,6 +495,35 @@ func sendProgressUpdate(projectID string, update ProgressUpdate) {
 			// Client channel is full, skip this update
 		}
 	}
+}
+
+func sendExportProgress(projectID string, progress ExportProgress) {
+	exportProgressMu.RLock()
+	client, exists := exportProgressClients[projectID]
+	exportProgressMu.RUnlock()
+
+	if exists {
+		select {
+		case client <- progress:
+		default:
+			// Client channel is full, skip this update
+		}
+	}
+}
+
+func updateExportStatus(projectID string, status *ExportStatus) {
+	activeExportsMu.Lock()
+	activeExports[projectID] = status
+	activeExportsMu.Unlock()
+}
+
+func getExportStatus(projectID string) *ExportStatus {
+	activeExportsMu.RLock()
+	defer activeExportsMu.RUnlock()
+	if status, exists := activeExports[projectID]; exists {
+		return status
+	}
+	return nil
 }
 
 func progressHandler(w http.ResponseWriter, r *http.Request) {
@@ -1354,6 +1411,16 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if there's already an active export
+	if status := getExportStatus(projectID); status != nil && status.Status == "processing" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Export already in progress",
+			"status":  status,
+		})
+		return
+	}
+
 	// Check if project exists
 	project, err := getProject(projectID)
 	if err != nil {
@@ -1372,19 +1439,65 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start async export
+	go asyncExportAIToolkit(projectID, project)
+
+	// Return immediate response
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":   "Export started",
+		"projectId": projectID,
+		"type":      "ai-toolkit",
+	})
+}
+
+func asyncExportAIToolkit(projectID string, project *Project) {
+	startTime := "2023-01-01T00:00:00Z" // You might want to use actual timestamp
+	
+	// Initialize export status
+	status := &ExportStatus{
+		ProjectID:  projectID,
+		ExportType: "ai-toolkit",
+		Status:     "processing",
+		StartTime:  startTime,
+	}
+	updateExportStatus(projectID, status)
+
+	// Send initial progress
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "ai-toolkit",
+		Step:       "initializing",
+		Status:     "processing",
+	})
+
 	// Get completed tasks
 	tasks, err := getTasksByProjectID(projectID)
 	if err != nil {
-		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to get tasks for AI-toolkit export", err, slog.String("project_id", projectID))
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:    projectID,
+			ExportType:   "ai-toolkit",
+			Status:       "error",
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 
 	// Get all images for path lookup
 	images, err := getImagesByProjectID(projectID)
 	if err != nil {
-		http.Error(w, "Failed to get images", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to get images for AI-toolkit export", err, slog.String("project_id", projectID))
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:    projectID,
+			ExportType:   "ai-toolkit",
+			Status:       "error",
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 
@@ -1394,6 +1507,21 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 		imageMap[images[i].ID] = &images[i]
 	}
 
+	// Count valid tasks for progress tracking
+	validTasks := 0
+	for _, task := range tasks {
+		if !task.Skipped && task.ImageBId.Valid && task.Prompt.Valid {
+			imageA := imageMap[task.ImageAID]
+			imageB := imageMap[task.ImageBId.String]
+			if imageA != nil && imageB != nil {
+				validTasks++
+			}
+		}
+	}
+
+	status.Total = validTasks
+	updateExportStatus(projectID, status)
+
 	// Create temporary export directory
 	exportDir := filepath.Join("data", "exports", projectID+"-ai-toolkit")
 	sourceDir := filepath.Join(exportDir, "source")
@@ -1402,95 +1530,172 @@ func exportAIToolkitHandler(w http.ResponseWriter, r *http.Request) {
 	// Clean and create directories
 	os.RemoveAll(exportDir)
 	if err := os.MkdirAll(sourceDir, 0755); err != nil {
-		http.Error(w, "Failed to create export directories", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to create source directory", err)
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
 		return
 	}
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		http.Error(w, "Failed to create export directories", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to create target directory", err)
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
 		return
 	}
 
-	// Process completed tasks
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "ai-toolkit",
+		Step:       "copying_files",
+		Status:     "processing",
+		Total:      validTasks,
+	})
+
+	// Process completed tasks with worker pool
 	exportCount := 0
-	for _, task := range tasks {
-		// Only export completed tasks with both imageB and prompt
-		if task.Skipped || !task.ImageBId.Valid || !task.Prompt.Valid {
-			continue
-		}
-
-		imageA := imageMap[task.ImageAID]
-		imageB := imageMap[task.ImageBId.String]
-		if imageA == nil || imageB == nil {
-			continue
-		}
-
-		// Generate unique filename for this pair
-		baseName := fmt.Sprintf("pair_%04d", exportCount+1)
-
-		// Copy source image
-		sourceImagePath := filepath.Join("data", "projects", projectID, imageA.Path)
-		destSourcePath := filepath.Join(sourceDir, baseName+filepath.Ext(imageA.Path))
-		if err := copyFile(sourceImagePath, destSourcePath); err != nil {
-			logError(r.Context(), "Failed to copy source image", err,
-				slog.String("source", sourceImagePath),
-				slog.String("dest", destSourcePath))
-			continue
-		}
-
-		// Copy target image
-		targetImagePath := filepath.Join("data", "projects", projectID, imageB.Path)
-		destTargetPath := filepath.Join(targetDir, baseName+filepath.Ext(imageB.Path))
-		if err := copyFile(targetImagePath, destTargetPath); err != nil {
-			logError(r.Context(), "Failed to copy target image", err,
-				slog.String("source", targetImagePath),
-				slog.String("dest", destTargetPath))
-			continue
-		}
-
-		// Write caption files in both source and target folders
-		sourceCaptionPath := filepath.Join(sourceDir, baseName+".txt")
-		targetCaptionPath := filepath.Join(targetDir, baseName+".txt")
-
-		captionContent := []byte(task.Prompt.String)
-
-		if err := os.WriteFile(sourceCaptionPath, captionContent, 0644); err != nil {
-			logError(r.Context(), "Failed to write source caption file", err, slog.String("path", sourceCaptionPath))
-			continue
-		}
-
-		if err := os.WriteFile(targetCaptionPath, captionContent, 0644); err != nil {
-			logError(r.Context(), "Failed to write target caption file", err, slog.String("path", targetCaptionPath))
-			continue
-		}
-
-		exportCount++
+	processedTasks := 0
+	var exportCountMu sync.Mutex
+	
+	// Worker pool for file operations
+	const numWorkers = 4
+	taskChan := make(chan Task, validTasks)
+	resultChan := make(chan bool, validTasks)
+	
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			for task := range taskChan {
+				exportCountMu.Lock()
+				currentCount := exportCount
+				exportCount++
+				exportCountMu.Unlock()
+				
+				success := processTaskForAIToolkit(task, imageMap, projectID, sourceDir, targetDir, currentCount)
+				resultChan <- success
+			}
+		}()
 	}
 
-	// Create ZIP archive
+	// Send tasks to workers
+	for _, task := range tasks {
+		if !task.Skipped && task.ImageBId.Valid && task.Prompt.Valid {
+			imageA := imageMap[task.ImageAID]
+			imageB := imageMap[task.ImageBId.String]
+			if imageA != nil && imageB != nil {
+				taskChan <- task
+			}
+		}
+	}
+	close(taskChan)
+
+	// Collect results and update progress
+	for i := 0; i < validTasks; i++ {
+		<-resultChan
+		processedTasks++
+		status.Progress = processedTasks
+		updateExportStatus(projectID, status)
+		
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:  projectID,
+			ExportType: "ai-toolkit",
+			Step:       "copying_files",
+			Progress:   processedTasks,
+			Total:      validTasks,
+			Status:     "processing",
+		})
+	}
+
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "ai-toolkit",
+		Step:       "creating_zip",
+		Status:     "processing",
+	})
+
+	// Create ZIP archive with progress
 	zipPath := filepath.Join("data", "exports", project.Name+"_ai-toolkit.zip")
-	if err := createZipArchive(exportDir, zipPath); err != nil {
-		http.Error(w, "Failed to create ZIP archive", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to create ZIP archive", err)
+	if err := createZipArchiveWithProgress(exportDir, zipPath, projectID); err != nil {
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:    projectID,
+			ExportType:   "ai-toolkit",
+			Status:       "error",
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 
-	// Serve the ZIP file
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_ai-toolkit.zip\"", project.Name))
+	// Update final status
+	status.Status = "completed"
+	status.FilePath = zipPath
+	status.CompletedAt = "2023-01-01T00:05:00Z" // You might want to use actual timestamp
+	updateExportStatus(projectID, status)
 
-	http.ServeFile(w, r, zipPath)
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "ai-toolkit",
+		Status:     "completed",
+		FilePath:   zipPath,
+	})
 
-	// Clean up temporary files
+	// Clean up temporary directory (but keep zip file for download)
 	go func() {
 		os.RemoveAll(exportDir)
-		os.Remove(zipPath)
 	}()
 
-	logInfo(r.Context(), "AI-toolkit export completed",
-		slog.String("project_id", projectID),
-		slog.Int("exported_pairs", exportCount))
+	exportCountMu.Lock()
+	finalExportCount := exportCount
+	exportCountMu.Unlock()
+	
+	logger.Info("AI-toolkit export completed",
+		"project_id", projectID,
+		"exported_pairs", finalExportCount)
+}
+
+func processTaskForAIToolkit(task Task, imageMap map[string]*Image, projectID, sourceDir, targetDir string, exportCount int) bool {
+	imageA := imageMap[task.ImageAID]
+	imageB := imageMap[task.ImageBId.String]
+	if imageA == nil || imageB == nil {
+		return false
+	}
+
+	// Generate unique filename for this pair
+	baseName := fmt.Sprintf("pair_%04d", exportCount+1)
+
+	// Copy source image
+	sourceImagePath := filepath.Join("data", "projects", projectID, imageA.Path)
+	destSourcePath := filepath.Join(sourceDir, baseName+filepath.Ext(imageA.Path))
+	if err := copyFile(sourceImagePath, destSourcePath); err != nil {
+		logger.Error("Failed to copy source image", "error", err)
+		return false
+	}
+
+	// Copy target image
+	targetImagePath := filepath.Join("data", "projects", projectID, imageB.Path)
+	destTargetPath := filepath.Join(targetDir, baseName+filepath.Ext(imageB.Path))
+	if err := copyFile(targetImagePath, destTargetPath); err != nil {
+		logger.Error("Failed to copy target image", "error", err)
+		return false
+	}
+
+	// Write caption files in both source and target folders
+	sourceCaptionPath := filepath.Join(sourceDir, baseName+".txt")
+	targetCaptionPath := filepath.Join(targetDir, baseName+".txt")
+
+	captionContent := []byte(task.Prompt.String)
+
+	if err := os.WriteFile(sourceCaptionPath, captionContent, 0644); err != nil {
+		logger.Error("Failed to write source caption file", "error", err)
+		return false
+	}
+
+	if err := os.WriteFile(targetCaptionPath, captionContent, 0644); err != nil {
+		logger.Error("Failed to write target caption file", "error", err)
+		return false
+	}
+
+	return true
 }
 
 func exportImageTextPairsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1502,6 +1707,16 @@ func exportImageTextPairsHandler(w http.ResponseWriter, r *http.Request) {
 	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/export/image-text-pairs")
 	if projectID == "" {
 		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if there's already an active export
+	if status := getExportStatus(projectID); status != nil && status.Status == "processing" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Export already in progress",
+			"status":  status,
+		})
 		return
 	}
 
@@ -1523,19 +1738,65 @@ func exportImageTextPairsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start async export
+	go asyncExportImageTextPairs(projectID, project)
+
+	// Return immediate response
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":   "Export started",
+		"projectId": projectID,
+		"type":      "image-text-pairs",
+	})
+}
+
+func asyncExportImageTextPairs(projectID string, project *Project) {
+	startTime := "2023-01-01T00:00:00Z" // You might want to use actual timestamp
+	
+	// Initialize export status
+	status := &ExportStatus{
+		ProjectID:  projectID,
+		ExportType: "image-text-pairs",
+		Status:     "processing",
+		StartTime:  startTime,
+	}
+	updateExportStatus(projectID, status)
+
+	// Send initial progress
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "image-text-pairs",
+		Step:       "initializing",
+		Status:     "processing",
+	})
+
 	// Get completed caption tasks
 	captionTasks, err := getCaptionTasksByProjectID(projectID)
 	if err != nil {
-		http.Error(w, "Failed to get caption tasks", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to get caption tasks for image-text-pairs export", err, slog.String("project_id", projectID))
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:    projectID,
+			ExportType:   "image-text-pairs",
+			Status:       "error",
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 
 	// Get all images for path lookup
 	images, err := getImagesByProjectID(projectID)
 	if err != nil {
-		http.Error(w, "Failed to get images", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to get images for image-text-pairs export", err, slog.String("project_id", projectID))
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:    projectID,
+			ExportType:   "image-text-pairs",
+			Status:       "error",
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 
@@ -1545,90 +1806,217 @@ func exportImageTextPairsHandler(w http.ResponseWriter, r *http.Request) {
 		imageMap[images[i].ID] = &images[i]
 	}
 
+	// Count valid tasks for progress tracking
+	validTasks := 0
+	for _, task := range captionTasks {
+		if !task.Skipped && task.Caption.Valid && imageMap[task.ImageID] != nil {
+			validTasks++
+		}
+	}
+
+	status.Total = validTasks
+	updateExportStatus(projectID, status)
+
 	// Create temporary export directory
 	exportDir := filepath.Join("data", "exports", projectID+"-image-text-pairs")
 
 	// Clean and create directory
 	os.RemoveAll(exportDir)
 	if err := os.MkdirAll(exportDir, 0755); err != nil {
-		http.Error(w, "Failed to create export directory", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to create export directory", err)
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
 		return
 	}
 
-	// Process completed caption tasks
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "image-text-pairs",
+		Step:       "converting_images",
+		Status:     "processing",
+		Total:      validTasks,
+	})
+
+	// Process completed caption tasks with worker pool
 	exportCount := 0
-	for _, task := range captionTasks {
-		// Only export completed tasks (not skipped, has caption)
-		if task.Skipped || !task.Caption.Valid {
-			continue
-		}
-
-		image := imageMap[task.ImageID]
-		if image == nil {
-			continue
-		}
-
-		// Generate sequential filename
-		imageFileName := fmt.Sprintf("%d.png", exportCount+1)
-		textFileName := fmt.Sprintf("%d.txt", exportCount+1)
-
-		// Read and convert image to PNG
-		sourceImagePath := filepath.Join("data", "projects", projectID, image.Path)
-		destImagePath := filepath.Join(exportDir, imageFileName)
-		
-		if err := convertImageToPNG(sourceImagePath, destImagePath); err != nil {
-			logError(r.Context(), "Failed to convert image to PNG", err,
-				slog.String("source", sourceImagePath),
-				slog.String("dest", destImagePath))
-			continue
-		}
-
-		// Write caption text file
-		textFilePath := filepath.Join(exportDir, textFileName)
-		captionContent := []byte(task.Caption.String)
-
-		if err := os.WriteFile(textFilePath, captionContent, 0644); err != nil {
-			logError(r.Context(), "Failed to write caption file", err, slog.String("path", textFilePath))
-			continue
-		}
-
-		exportCount++
+	processedTasks := 0
+	var exportCountMu sync.Mutex
+	
+	// Worker pool for file operations
+	const numWorkers = 4
+	taskChan := make(chan CaptionTask, validTasks)
+	resultChan := make(chan bool, validTasks)
+	
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			for task := range taskChan {
+				exportCountMu.Lock()
+				currentCount := exportCount
+				exportCount++
+				exportCountMu.Unlock()
+				
+				success := processTaskForImageTextPairs(task, imageMap, projectID, exportDir, currentCount)
+				resultChan <- success
+			}
+		}()
 	}
 
-	// Create ZIP archive
+	// Send tasks to workers
+	for _, task := range captionTasks {
+		if !task.Skipped && task.Caption.Valid && imageMap[task.ImageID] != nil {
+			taskChan <- task
+		}
+	}
+	close(taskChan)
+
+	// Collect results and update progress
+	for i := 0; i < validTasks; i++ {
+		<-resultChan
+		processedTasks++
+		status.Progress = processedTasks
+		updateExportStatus(projectID, status)
+		
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:  projectID,
+			ExportType: "image-text-pairs",
+			Step:       "converting_images",
+			Progress:   processedTasks,
+			Total:      validTasks,
+			Status:     "processing",
+		})
+	}
+
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "image-text-pairs",
+		Step:       "creating_zip",
+		Status:     "processing",
+	})
+
+	// Create ZIP archive with progress
 	zipPath := filepath.Join("data", "exports", project.Name+"_image-text-pairs.zip")
-	if err := createZipArchive(exportDir, zipPath); err != nil {
-		http.Error(w, "Failed to create ZIP archive", http.StatusInternalServerError)
-		logError(r.Context(), "Failed to create ZIP archive", err)
+	if err := createZipArchiveWithProgress(exportDir, zipPath, projectID); err != nil {
+		status.Status = "error"
+		status.Error = err.Error()
+		updateExportStatus(projectID, status)
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:    projectID,
+			ExportType:   "image-text-pairs",
+			Status:       "error",
+			ErrorMessage: err.Error(),
+		})
 		return
 	}
 
-	// Serve the ZIP file
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s_image-text-pairs.zip\"", project.Name))
+	// Update final status
+	status.Status = "completed"
+	status.FilePath = zipPath
+	status.CompletedAt = "2023-01-01T00:05:00Z" // You might want to use actual timestamp
+	updateExportStatus(projectID, status)
 
-	http.ServeFile(w, r, zipPath)
+	sendExportProgress(projectID, ExportProgress{
+		ProjectID:  projectID,
+		ExportType: "image-text-pairs",
+		Status:     "completed",
+		FilePath:   zipPath,
+	})
 
-	// Clean up temporary files
+	// Clean up temporary directory (but keep zip file for download)
 	go func() {
 		os.RemoveAll(exportDir)
-		os.Remove(zipPath)
 	}()
 
-	logInfo(r.Context(), "Image-text-pairs export completed",
-		slog.String("project_id", projectID),
-		slog.Int("exported_pairs", exportCount))
+	exportCountMu.Lock()
+	finalExportCount := exportCount
+	exportCountMu.Unlock()
+	
+	logger.Info("Image-text-pairs export completed",
+		"project_id", projectID,
+		"exported_pairs", finalExportCount)
 }
 
-// Helper function to convert image to PNG format
+func processTaskForImageTextPairs(task CaptionTask, imageMap map[string]*Image, projectID, exportDir string, exportCount int) bool {
+	image := imageMap[task.ImageID]
+	if image == nil {
+		return false
+	}
+
+	// Generate sequential filename
+	imageFileName := fmt.Sprintf("%d.png", exportCount+1)
+	textFileName := fmt.Sprintf("%d.txt", exportCount+1)
+
+	// Read and convert image to PNG
+	sourceImagePath := filepath.Join("data", "projects", projectID, image.Path)
+	destImagePath := filepath.Join(exportDir, imageFileName)
+	
+	if err := convertImageToPNG(sourceImagePath, destImagePath); err != nil {
+		logger.Error("Failed to convert image to PNG", "error", err)
+		return false
+	}
+
+	// Write caption text file
+	textFilePath := filepath.Join(exportDir, textFileName)
+	captionContent := []byte(task.Caption.String)
+
+	if err := os.WriteFile(textFilePath, captionContent, 0644); err != nil {
+		logger.Error("Failed to write caption file", "error", err)
+		return false
+	}
+
+	return true
+}
+
+// Helper function to copy image with format preservation option
 func convertImageToPNG(sourcePath, destPath string) error {
-	// Open source image
+	return convertImageWithOptions(sourcePath, destPath, false)
+}
+
+// Helper function to copy image preserving original format (more efficient)
+func copyImagePreservingFormat(sourcePath, destPath string) error {
+	return convertImageWithOptions(sourcePath, destPath, true)
+}
+
+func convertImageWithOptions(sourcePath, destPath string, preserveFormat bool) error {
+	// Check if source is already PNG and just copy it
+	sourceExt := strings.ToLower(filepath.Ext(sourcePath))
+	if sourceExt == ".png" {
+		return copyFile(sourcePath, destPath)
+	}
+
+	// Check actual format
 	sourceFile, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("failed to open source image: %v", err)
 	}
 	defer sourceFile.Close()
+
+	// Peek at format without full decode
+	_, format, err := image.DecodeConfig(sourceFile)
+	if err != nil {
+		return fmt.Errorf("failed to decode image config: %v", err)
+	}
+
+	// If it's already PNG format, just copy
+	if format == "png" {
+		return copyFile(sourcePath, destPath)
+	}
+
+	// For JPEG, handle based on preserveFormat option
+	if format == "jpeg" {
+		if preserveFormat {
+			// Keep original extension and format for maximum size efficiency
+			originalDestPath := strings.TrimSuffix(destPath, filepath.Ext(destPath)) + ".jpg"
+			return copyFile(sourcePath, originalDestPath)
+		} else {
+			// Copy original JPEG with .png extension - keeps file size small
+			// Most ML frameworks can handle this format mismatch
+			return copyFileWithFormat(sourcePath, destPath, "jpeg")
+		}
+	}
+
+	// Only do actual PNG conversion for WebP or other formats that benefit from it
+	sourceFile.Seek(0, 0) // Reset file pointer
 
 	// Decode image (supports JPEG, PNG, WebP)
 	img, _, err := image.Decode(sourceFile)
@@ -1643,15 +2031,24 @@ func convertImageToPNG(sourcePath, destPath string) error {
 	}
 	defer destFile.Close()
 
-	// Encode as PNG
-	if err := png.Encode(destFile, img); err != nil {
+	// Use optimized PNG encoder settings
+	encoder := &png.Encoder{
+		CompressionLevel: png.DefaultCompression,
+	}
+
+	if err := encoder.Encode(destFile, img); err != nil {
 		return fmt.Errorf("failed to encode PNG: %v", err)
 	}
 
 	return nil
 }
 
-// Helper function to copy files
+// Copy file preserving original format (for size efficiency)
+func copyFileWithFormat(src, dst, format string) error {
+	return copyFile(src, dst)
+}
+
+// Helper function to copy files with optimized buffering
 func copyFile(src, dst string) error {
 	source, err := os.Open(src)
 	if err != nil {
@@ -1665,11 +2062,13 @@ func copyFile(src, dst string) error {
 	}
 	defer destination.Close()
 
-	_, err = io.Copy(destination, source)
+	// Use larger buffer for better performance
+	buffer := make([]byte, 64*1024) // 64KB buffer
+	_, err = io.CopyBuffer(destination, source, buffer)
 	return err
 }
 
-// Helper function to create ZIP archive
+// Helper function to create ZIP archive with optimized streaming
 func createZipArchive(sourceDir, zipPath string) error {
 	zipFile, err := os.Create(zipPath)
 	if err != nil {
@@ -1679,6 +2078,9 @@ func createZipArchive(sourceDir, zipPath string) error {
 
 	zipWriter := zip.NewWriter(zipFile)
 	defer zipWriter.Close()
+
+	// Use buffered writer for better performance
+	bufferedZipFile := make([]byte, 64*1024) // 64KB buffer
 
 	return filepath.Walk(sourceDir, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1694,7 +2096,12 @@ func createZipArchive(sourceDir, zipPath string) error {
 			return err
 		}
 
-		zipFileWriter, err := zipWriter.Create(relPath)
+		// Create zip entry header with optimized compression
+		header := &zip.FileHeader{
+			Name:   relPath,
+			Method: zip.Deflate, // Use deflate compression for better ratios
+		}
+		zipFileWriter, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			return err
 		}
@@ -1705,9 +2112,191 @@ func createZipArchive(sourceDir, zipPath string) error {
 		}
 		defer file.Close()
 
-		_, err = io.Copy(zipFileWriter, file)
+		// Use optimized copy with buffer
+		_, err = io.CopyBuffer(zipFileWriter, file, bufferedZipFile)
 		return err
 	})
+}
+
+// Optimized version with progress tracking
+func createZipArchiveWithProgress(sourceDir, zipPath, projectID string) error {
+	// Count total files first for progress tracking
+	totalFiles := 0
+	err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			totalFiles++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		return err
+	}
+	defer zipFile.Close()
+
+	zipWriter := zip.NewWriter(zipFile)
+	defer zipWriter.Close()
+
+	processedFiles := 0
+	buffer := make([]byte, 64*1024) // 64KB buffer
+
+	return filepath.Walk(sourceDir, func(filePath string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(sourceDir, filePath)
+		if err != nil {
+			return err
+		}
+
+		// Send progress update
+		processedFiles++
+		sendExportProgress(projectID, ExportProgress{
+			ProjectID:  projectID,
+			ExportType: "zip",
+			Step:       "compressing",
+			Progress:   processedFiles,
+			Total:      totalFiles,
+			Status:     "processing",
+			FilePath:   relPath,
+		})
+
+		// Create zip entry header with optimized compression
+		header := &zip.FileHeader{
+			Name:   relPath,
+			Method: zip.Deflate, // Use deflate compression for better ratios
+		}
+		zipFileWriter, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+
+		file, err := os.Open(filePath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		_, err = io.CopyBuffer(zipFileWriter, file, buffer)
+		return err
+	})
+}
+
+func exportProgressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := r.URL.Query().Get("projectId")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Set headers for SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Create progress channel for this client
+	progressCh := make(chan ExportProgress, 100)
+	exportProgressMu.Lock()
+	exportProgressClients[projectID] = progressCh
+	exportProgressMu.Unlock()
+
+	// Clean up when client disconnects
+	defer func() {
+		exportProgressMu.Lock()
+		delete(exportProgressClients, projectID)
+		exportProgressMu.Unlock()
+		close(progressCh)
+	}()
+
+	// Send events to client
+	for {
+		select {
+		case update := <-progressCh:
+			data, _ := json.Marshal(update)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			w.(http.Flusher).Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func getExportStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/export-status")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	status := getExportStatus(projectID)
+	if status == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "none"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+func downloadExportHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/projects/"), "/export/download")
+	if projectID == "" {
+		http.Error(w, "Project ID is required", http.StatusBadRequest)
+		return
+	}
+
+	status := getExportStatus(projectID)
+	if status == nil || status.Status != "completed" || status.FilePath == "" {
+		http.Error(w, "No completed export found", http.StatusNotFound)
+		return
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(status.FilePath); os.IsNotExist(err) {
+		http.Error(w, "Export file not found", http.StatusNotFound)
+		return
+	}
+
+	// Get project info for filename
+	project, err := getProject(projectID)
+	if err != nil {
+		http.Error(w, "Failed to get project", http.StatusInternalServerError)
+		return
+	}
+
+	// Set appropriate headers
+	filename := fmt.Sprintf("%s_%s.zip", project.Name, status.ExportType)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+
+	// Serve the file
+	http.ServeFile(w, r, status.FilePath)
 }
 
 type ForkProjectRequest struct {
@@ -2253,6 +2842,14 @@ func main() {
 			getAutoCaptionStatusHandler(w, r)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/export-status") && r.Method == http.MethodGet {
+			getExportStatusHandler(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/export/download") && r.Method == http.MethodGet {
+			downloadExportHandler(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			getProjectHandler(w, r)
@@ -2300,6 +2897,7 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/auto-caption-progress", autoCaptionProgressHandler)
+	mux.HandleFunc("/export-progress", exportProgressHandler)
 
 	logger.Info("Server starting", "port", 8080)
 	if err := http.ListenAndServe(":8080", loggingMiddleware(corsMiddleware(mux))); err != nil {

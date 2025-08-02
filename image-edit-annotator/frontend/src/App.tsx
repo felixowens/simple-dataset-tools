@@ -60,7 +60,7 @@ function App() {
 }
 
 import { useNavigate, useParams } from 'react-router-dom'
-import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, getCaptionTasks, updateCaptionTask, startAutoCaptioning, cancelAutoCaptioning, getAutoCaptionStatus, createAutoCaptionProgressEventSource, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type CaptionTask, type ForkProjectRequest, type AutoCaptionConfig, type AutoCaptionStatusResponse, type AutoCaptionProgress } from './api'
+import { createProject, getProject, getImages, generateTasks, getTasks, updateTask, deleteImage, forkProject, getCaptionTasks, updateCaptionTask, startAutoCaptioning, cancelAutoCaptioning, getAutoCaptionStatus, createAutoCaptionProgressEventSource, startExport, getExportStatus, downloadExport, createExportProgressEventSource, type Project, type ProjectWithStats, type Image, type TaskGenerationResponse, type Task, type CaptionTask, type ForkProjectRequest, type AutoCaptionConfig, type AutoCaptionStatusResponse, type AutoCaptionProgress, type ExportStatus, type ExportProgress } from './api'
 import { FileUpload } from './components/FileUpload'
 import { AnnotationWizard } from './components/AnnotationWizard'
 import { CaptionAnnotationWizard } from './components/CaptionAnnotationWizard'
@@ -475,6 +475,8 @@ function ProjectPage() {
   const [showSettingsModal, setShowSettingsModal] = useState(false)
   const [autoCaptionStatus, setAutoCaptionStatus] = useState<AutoCaptionStatusResponse | null>(null)
   const [autoCaptionProgress, setAutoCaptionProgress] = useState<AutoCaptionProgress | null>(null)
+  const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null)
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null)
 
   const fetchImages = async () => {
     if (!projectId) return
@@ -531,6 +533,7 @@ function ProjectPage() {
     if (pageState.status === 'success') {
       fetchImages()
       fetchTasks()
+      fetchExportStatus()
       if (pageState.project.projectType === 'caption') {
         fetchAutoCaptionStatus()
       }
@@ -673,6 +676,18 @@ function ProjectPage() {
     }
   }
 
+  const fetchExportStatus = async () => {
+    if (!projectId) return
+    try {
+      const response = await getExportStatus(projectId)
+      if (response.data) {
+        setExportStatus(response.data)
+      }
+    } catch (error) {
+      console.error('Error fetching export status:', error)
+    }
+  }
+
   const handleStartAutoCaption = async () => {
     if (!projectId || pageState.status !== 'success') return
     
@@ -731,6 +746,43 @@ function ProjectPage() {
       console.error('Error cancelling auto captioning:', error)
       alert('Failed to cancel auto captioning.')
     }
+  }
+
+  const handleStartExport = async (exportType: 'ai-toolkit' | 'image-text-pairs') => {
+    if (!projectId) return
+    
+    try {
+      await startExport(projectId, exportType)
+      fetchExportStatus()
+      
+      // Start listening for progress updates
+      const eventSource = createExportProgressEventSource(projectId)
+      eventSource.onmessage = (event) => {
+        const progress: ExportProgress = JSON.parse(event.data)
+        setExportProgress(progress)
+        
+        // If completed or error, close the event source and refresh status
+        if (progress.status === 'completed' || progress.status === 'error') {
+          eventSource.close()
+          fetchExportStatus()
+          setExportProgress(null)
+        }
+      }
+      
+      eventSource.onerror = () => {
+        eventSource.close()
+        fetchExportStatus()
+        setExportProgress(null)
+      }
+    } catch (error) {
+      console.error('Error starting export:', error)
+      alert('Failed to start export. Please try again.')
+    }
+  }
+
+  const handleDownloadExport = () => {
+    if (!projectId || !exportStatus || exportStatus.status !== 'completed') return
+    downloadExport(projectId)
   }
 
   switch (pageState.status) {
@@ -1208,16 +1260,29 @@ function ProjectPage() {
                       <p className="text-gray-300 text-sm mb-3">
                         ZIP archive with numbered PNG images and matching .txt caption files.
                       </p>
-                      <a
-                        href={`http://localhost:8080/projects/${projectId}/export/image-text-pairs`}
-                        download
-                        className="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
-                      >
-                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                        </svg>
-                        Download ZIP
-                      </a>
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => handleStartExport('image-text-pairs')}
+                          disabled={exportProgress?.exportType === 'image-text-pairs' && exportProgress?.status === 'processing'}
+                          className="w-full inline-flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                          {exportProgress?.exportType === 'image-text-pairs' && exportProgress?.status === 'processing' ? 'Creating ZIP...' : 'Create ZIP'}
+                        </button>
+                        {exportStatus?.exportType === 'image-text-pairs' && exportStatus?.status === 'completed' && (
+                          <button
+                            onClick={handleDownloadExport}
+                            className="w-full inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                          >
+                            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            Download Latest Export
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1228,19 +1293,79 @@ function ProjectPage() {
                       <p className="text-gray-300 text-sm mb-3">
                         ZIP archive with source/target folders and caption text files in both directories.
                       </p>
-                      <a
-                        href={`http://localhost:8080/projects/${projectId}/export/ai-toolkit`}
-                        download
-                        className="inline-flex items-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
-                      >
-                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
-                        </svg>
-                        Download ZIP
-                      </a>
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => handleStartExport('ai-toolkit')}
+                          disabled={exportProgress?.exportType === 'ai-toolkit' && exportProgress?.status === 'processing'}
+                          className="w-full inline-flex items-center justify-center px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
+                          </svg>
+                          {exportProgress?.exportType === 'ai-toolkit' && exportProgress?.status === 'processing' ? 'Creating ZIP...' : 'Create ZIP'}
+                        </button>
+                        {exportStatus?.exportType === 'ai-toolkit' && exportStatus?.status === 'completed' && (
+                          <button
+                            onClick={handleDownloadExport}
+                            className="w-full inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                          >
+                            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            Download Latest Export
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
+
+                {/* Export Progress */}
+                {exportProgress && (
+                  <div className="mt-4 p-3 bg-blue-900/30 border border-blue-600/30 rounded">
+                    <h4 className="text-blue-400 font-medium mb-2">Export Progress</h4>
+                    <div className="text-blue-300 text-sm space-y-2">
+                      <div className="flex justify-between">
+                        <span>Type:</span>
+                        <span className="capitalize">{exportProgress.exportType}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Step:</span>
+                        <span className="capitalize">{exportProgress.step.replace('_', ' ')}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Status:</span>
+                        <span className={`capitalize font-medium ${
+                          exportProgress.status === 'processing' ? 'text-yellow-400' :
+                          exportProgress.status === 'completed' ? 'text-green-400' :
+                          exportProgress.status === 'error' ? 'text-red-400' :
+                          'text-gray-400'
+                        }`}>
+                          {exportProgress.status}
+                        </span>
+                      </div>
+                      {exportProgress.total > 0 && (
+                        <>
+                          <div className="flex justify-between">
+                            <span>Progress:</span>
+                            <span>{exportProgress.progress} / {exportProgress.total}</span>
+                          </div>
+                          <div className="w-full bg-gray-600 rounded-full h-2">
+                            <div
+                              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${(exportProgress.progress / exportProgress.total) * 100}%` }}
+                            />
+                          </div>
+                        </>
+                      )}
+                      {exportProgress.errorMessage && (
+                        <div className="text-red-400 text-xs">
+                          Error: {exportProgress.errorMessage}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="bg-gray-800 rounded p-3">
                   <h5 className="text-white text-sm font-medium mb-2">Export Details:</h5>
